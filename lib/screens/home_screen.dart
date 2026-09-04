@@ -2,12 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 import '../models/note.dart';
 import '../services/notes_service.dart';
+import '../services/study_streak_service.dart';
+import '../widgets/study_activity_region.dart';
+import 'calendar_screen.dart';
 import 'canvas_screen.dart';
 import 'chat_screen.dart';
 import 'floating_chat_button.dart';
 import 'folder_screen.dart';
 import 'game_screen.dart';
-import 'profile_screen.dart';
 import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -22,7 +24,7 @@ class _HomeScreenState extends State<HomeScreen> {
   List<Note> _notes = [];
   List<NoteFolder> _folders = [];
   bool _loading = true;
-  int _selectedTab = 0; // 0=Note, 1=Chat, 2=GPT, 3=Game, 4=Profile
+  int _selectedTab = 0; // 0=Note, 1=Calendar, 2=Chat, 3=GPT, 4=Game
   String? _draggingOverFolderId;
 
   @override
@@ -41,8 +43,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  List<Note> get _rootNotes =>
-      _notes.where((n) => n.folderId == null).toList();
+  List<Note> get _rootNotes => _notes.where((n) => n.folderId == null).toList();
 
   List<NoteFolder> get _rootFolders =>
       _folders.where((f) => f.parentFolderId == null).toList();
@@ -59,8 +60,11 @@ class _HomeScreenState extends State<HomeScreen> {
     if (idx < 0) return;
     setState(() {
       _notes[idx] = Note(
-        id: note.id, title: note.title, pages: note.pages,
-        updatedAt: note.updatedAt, folderId: folder.id,
+        id: note.id,
+        title: note.title,
+        pages: note.pages,
+        updatedAt: note.updatedAt,
+        folderId: folder.id,
       );
       _draggingOverFolderId = null;
     });
@@ -79,8 +83,11 @@ class _HomeScreenState extends State<HomeScreen> {
     if (idx < 0) return;
     setState(() {
       _notes[idx] = Note(
-        id: note.id, title: note.title, pages: note.pages,
-        updatedAt: note.updatedAt, folderId: null,
+        id: note.id,
+        title: note.title,
+        pages: note.pages,
+        updatedAt: note.updatedAt,
+        folderId: null,
       );
     });
     await _service.saveNotes(_notes);
@@ -96,20 +103,22 @@ class _HomeScreenState extends State<HomeScreen> {
         padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Container(
-            width: 40, height: 4,
+            width: 40,
+            height: 4,
             margin: const EdgeInsets.only(bottom: 16),
             decoration: BoxDecoration(
                 color: Colors.grey.shade300,
                 borderRadius: BorderRadius.circular(2)),
           ),
           Text('Move "${note.title}" to…',
-              style: const TextStyle(
-                  fontSize: 16, fontWeight: FontWeight.w600)),
+              style:
+                  const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
           const SizedBox(height: 12),
           // Root option
           ListTile(
             leading: Container(
-              width: 40, height: 40,
+              width: 40,
+              height: 40,
               decoration: BoxDecoration(
                   color: Colors.grey.shade100,
                   borderRadius: BorderRadius.circular(10)),
@@ -126,24 +135,24 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           // Each folder option
           ..._folders.map((f) => ListTile(
-            leading: Container(
-              width: 40, height: 40,
-              decoration: BoxDecoration(
-                  color: f.color.withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(10)),
-              child: Icon(Icons.folder_rounded, color: f.color),
-            ),
-            title: Text(f.name),
-            subtitle: Text(
-                '${notesInFolder(f.id).length} notes'),
-            trailing: note.folderId == f.id
-                ? const Icon(Icons.check, color: Color(0xFF6C63FF))
-                : null,
-            onTap: () {
-              Navigator.pop(context);
-              if (note.folderId != f.id) _moveNoteToFolder(note, f);
-            },
-          )),
+                leading: Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                      color: f.color.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(10)),
+                  child: Icon(Icons.folder_rounded, color: f.color),
+                ),
+                title: Text(f.name),
+                subtitle: Text('${notesInFolder(f.id).length} notes'),
+                trailing: note.folderId == f.id
+                    ? const Icon(Icons.check, color: Color(0xFF6C63FF))
+                    : null,
+                onTap: () {
+                  Navigator.pop(context);
+                  if (note.folderId != f.id) _moveNoteToFolder(note, f);
+                },
+              )),
         ]),
       ),
     );
@@ -160,7 +169,8 @@ class _HomeScreenState extends State<HomeScreen> {
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             Container(
-              width: 40, height: 4,
+              width: 40,
+              height: 4,
               margin: const EdgeInsets.only(bottom: 16),
               decoration: BoxDecoration(
                   color: Colors.grey.shade300,
@@ -168,7 +178,8 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             ListTile(
               leading: Container(
-                width: 44, height: 44,
+                width: 44,
+                height: 44,
                 decoration: BoxDecoration(
                     color: const Color(0xFFEEEDFE),
                     borderRadius: BorderRadius.circular(12)),
@@ -178,21 +189,28 @@ class _HomeScreenState extends State<HomeScreen> {
               title: const Text('New Note',
                   style: TextStyle(fontWeight: FontWeight.w600)),
               subtitle: const Text('Create a blank note'),
-              onTap: () { Navigator.pop(context); _createNote(); },
+              onTap: () {
+                Navigator.pop(context);
+                _createNote();
+              },
             ),
             ListTile(
               leading: Container(
-                width: 44, height: 44,
+                width: 44,
+                height: 44,
                 decoration: BoxDecoration(
                     color: const Color(0xFFFFF0E0),
                     borderRadius: BorderRadius.circular(12)),
-                child: const Icon(Icons.folder_outlined,
-                    color: Color(0xFFFF8C00)),
+                child:
+                    const Icon(Icons.folder_outlined, color: Color(0xFFFF8C00)),
               ),
               title: const Text('New Folder',
                   style: TextStyle(fontWeight: FontWeight.w600)),
               subtitle: const Text('Group notes together'),
-              onTap: () { Navigator.pop(context); _createFolder(); },
+              onTap: () {
+                Navigator.pop(context);
+                _createFolder();
+              },
             ),
             const SizedBox(height: 8),
           ]),
@@ -208,13 +226,13 @@ class _HomeScreenState extends State<HomeScreen> {
       builder: (ctx) => AlertDialog(
         title: const Text('New note'),
         content: TextField(
-          controller: ctrl, autofocus: true,
+          controller: ctrl,
+          autofocus: true,
           decoration: const InputDecoration(hintText: 'Note title'),
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel')),
+              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           FilledButton(
               onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
               child: const Text('Create')),
@@ -222,13 +240,13 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
     if (title == null || title.isEmpty) return;
-    final note = Note(
-        id: const Uuid().v4(), title: title, updatedAt: DateTime.now());
+    final note =
+        Note(id: const Uuid().v4(), title: title, updatedAt: DateTime.now());
     _notes.insert(0, note);
     await _service.saveNotes(_notes);
     if (!mounted) return;
-    await Navigator.push(context,
-        MaterialPageRoute(builder: (_) => CanvasScreen(note: note)));
+    await Navigator.push(
+        context, MaterialPageRoute(builder: (_) => CanvasScreen(note: note)));
     await _load();
   }
 
@@ -236,9 +254,14 @@ class _HomeScreenState extends State<HomeScreen> {
     final ctrl = TextEditingController(text: 'New Folder');
     String selectedColor = '6C63FF';
     final folderColors = [
-      ('6C63FF', 'Purple'), ('FF8C00', 'Orange'), ('E53935', 'Red'),
-      ('43A047', 'Green'),  ('1E88E5', 'Blue'),   ('EC4899', 'Pink'),
-      ('00ACC1', 'Cyan'),   ('8D6E63', 'Brown'),
+      ('6C63FF', 'Purple'),
+      ('FF8C00', 'Orange'),
+      ('E53935', 'Red'),
+      ('43A047', 'Green'),
+      ('1E88E5', 'Blue'),
+      ('EC4899', 'Pink'),
+      ('00ACC1', 'Cyan'),
+      ('8D6E63', 'Brown'),
     ];
 
     final name = await showDialog<String>(
@@ -247,16 +270,20 @@ class _HomeScreenState extends State<HomeScreen> {
         builder: (ctx, setS) => AlertDialog(
           title: const Text('New folder'),
           content: Column(mainAxisSize: MainAxisSize.min, children: [
-            TextField(controller: ctrl, autofocus: true,
+            TextField(
+                controller: ctrl,
+                autofocus: true,
                 decoration: const InputDecoration(hintText: 'Folder name')),
             const SizedBox(height: 16),
-            const Align(alignment: Alignment.centerLeft,
+            const Align(
+                alignment: Alignment.centerLeft,
                 child: Text('Color',
-                    style: TextStyle(
-                        fontSize: 13, fontWeight: FontWeight.w500))),
+                    style:
+                        TextStyle(fontSize: 13, fontWeight: FontWeight.w500))),
             const SizedBox(height: 8),
             Wrap(
-              spacing: 10, runSpacing: 10,
+              spacing: 10,
+              runSpacing: 10,
               children: folderColors.map((c) {
                 final color = Color(int.parse('FF${c.$1}', radix: 16));
                 final sel = selectedColor == c.$1;
@@ -264,16 +291,17 @@ class _HomeScreenState extends State<HomeScreen> {
                   onTap: () => setS(() => selectedColor = c.$1),
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 120),
-                    width: sel ? 34 : 28, height: sel ? 34 : 28,
+                    width: sel ? 34 : 28,
+                    height: sel ? 34 : 28,
                     decoration: BoxDecoration(
-                      color: color, shape: BoxShape.circle,
+                      color: color,
+                      shape: BoxShape.circle,
                       border: Border.all(
                           color: sel ? Colors.black54 : Colors.transparent,
                           width: 2.5),
                     ),
                     child: sel
-                        ? const Icon(Icons.check,
-                            size: 16, color: Colors.white)
+                        ? const Icon(Icons.check, size: 16, color: Colors.white)
                         : null,
                   ),
                 );
@@ -293,8 +321,10 @@ class _HomeScreenState extends State<HomeScreen> {
     );
     if (name == null || name.isEmpty) return;
     final folder = NoteFolder(
-      id: const Uuid().v4(), name: name,
-      colorHex: selectedColor, createdAt: DateTime.now(),
+      id: const Uuid().v4(),
+      name: name,
+      colorHex: selectedColor,
+      createdAt: DateTime.now(),
       parentFolderId: null,
     );
     setState(() => _folders.insert(0, folder));
@@ -302,8 +332,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _openNote(Note note) async {
-    await Navigator.push(context,
-        MaterialPageRoute(builder: (_) => CanvasScreen(note: note)));
+    await Navigator.push(
+        context, MaterialPageRoute(builder: (_) => CanvasScreen(note: note)));
     await _load();
   }
 
@@ -359,7 +389,8 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    final noteCount = _notes.where((n) => folderIds.contains(n.folderId)).length;
+    final noteCount =
+        _notes.where((n) => folderIds.contains(n.folderId)).length;
     final subCount = folderIds.length - 1;
     final ok = await showDialog<bool>(
       context: context,
@@ -384,8 +415,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final updated = _notes.map((n) {
       if (folderIds.contains(n.folderId)) {
-        return Note(id: n.id, title: n.title, pages: n.pages,
-            updatedAt: n.updatedAt, folderId: null);
+        return Note(
+            id: n.id,
+            title: n.title,
+            pages: n.pages,
+            updatedAt: n.updatedAt,
+            folderId: null);
       }
       return n;
     }).toList();
@@ -430,33 +465,36 @@ class _HomeScreenState extends State<HomeScreen> {
       padding: const EdgeInsets.symmetric(vertical: 24),
       child: Column(children: [
         Container(
-          width: 44, height: 44,
+          width: 44,
+          height: 44,
           margin: const EdgeInsets.only(bottom: 32),
           decoration: BoxDecoration(
             gradient: const LinearGradient(
               colors: [Color(0xFF6C63FF), Color(0xFF9C94FF)],
-              begin: Alignment.topLeft, end: Alignment.bottomRight,
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
             ),
             borderRadius: BorderRadius.circular(12),
           ),
-          child: const Icon(Icons.auto_stories,
-              color: Colors.white, size: 24),
+          child: const Icon(Icons.auto_stories, color: Colors.white, size: 24),
         ),
         _sidebarItem(0, Icons.book_outlined, Icons.book, 'Note'),
         _sidebarItem(
-            1, Icons.chat_bubble_outline, Icons.chat_bubble, 'Chat'),
+            1, Icons.calendar_month_outlined, Icons.calendar_month, 'Calendar'),
+        _sidebarItem(2, Icons.chat_bubble_outline, Icons.chat_bubble, 'Chat'),
+        _sidebarItem(3, Icons.auto_awesome_outlined, Icons.auto_awesome, 'GPT'),
         _sidebarItem(
-            2, Icons.auto_awesome_outlined, Icons.auto_awesome, 'GPT'),
-        _sidebarItem(3, Icons.sports_esports_outlined,
-            Icons.sports_esports, 'Game'),
-        _sidebarItem(4, Icons.person_outline, Icons.person, 'Profile'),
+            4, Icons.sports_esports_outlined, Icons.sports_esports, 'Game'),
         const Spacer(),
+        _buildStreakBadge(),
+        const SizedBox(height: 12),
         GestureDetector(
           onTap: () => Navigator.push(context,
               MaterialPageRoute(builder: (_) => const SettingsScreen())),
           child: Column(children: [
             Container(
-              width: 52, height: 52,
+              width: 52,
+              height: 52,
               decoration: BoxDecoration(
                   color: Colors.grey.shade100,
                   borderRadius: BorderRadius.circular(14)),
@@ -465,8 +503,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 4),
             Text('Settings',
-                style: TextStyle(
-                    fontSize: 10, color: Colors.grey.shade500)),
+                style: TextStyle(fontSize: 10, color: Colors.grey.shade500)),
           ]),
         ),
         const SizedBox(height: 8),
@@ -489,33 +526,144 @@ class _HomeScreenState extends State<HomeScreen> {
           borderRadius: BorderRadius.circular(14),
         ),
         child: Column(children: [
-          Icon(sel ? activeIcon : icon, size: 26,
-              color: sel
-                  ? const Color(0xFF6C63FF)
-                  : Colors.grey.shade500),
+          Icon(sel ? activeIcon : icon,
+              size: 26,
+              color: sel ? const Color(0xFF6C63FF) : Colors.grey.shade500),
           const SizedBox(height: 4),
           Text(label,
               style: TextStyle(
                   fontSize: 11,
-                  fontWeight:
-                      sel ? FontWeight.w600 : FontWeight.normal,
-                  color: sel
-                      ? const Color(0xFF6C63FF)
-                      : Colors.grey.shade500)),
+                  fontWeight: sel ? FontWeight.w600 : FontWeight.normal,
+                  color: sel ? const Color(0xFF6C63FF) : Colors.grey.shade500)),
         ]),
       ),
     );
   }
 
   Widget _buildMainContent() {
-    switch (_selectedTab) {
-      case 0: return _buildNotesPanel();
-      case 1: return const ClassicChatScreen();
-      case 2: return const ChatScreen();
-      case 3: return const GameScreen();
-      case 4: return const ProfileScreen();
-      default: return _buildNotesPanel();
-    }
+    return IndexedStack(
+      index: _selectedTab,
+      children: [
+        StudyActivityRegion(
+          enabled: _selectedTab == 0,
+          child: _buildNotesPanel(),
+        ),
+        const CalendarScreen(),
+        const ClassicChatScreen(),
+        StudyActivityRegion(
+          enabled: _selectedTab == 3,
+          child: const ChatScreen(),
+        ),
+        StudyActivityRegion(
+          enabled: _selectedTab == 4,
+          child: const GameScreen(),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildStreakBadge() {
+    final streak = StudyStreakService.instance;
+    return AnimatedBuilder(
+      animation: streak,
+      builder: (context, _) => Tooltip(
+        message: streak.isProbation
+            ? 'Probation: ${streak.recoveryDays}/${StudyStreakService.recoveryGoalDays} recovery days'
+            : '${streak.currentStreak} day study streak',
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: () => _showStreakDialog(streak),
+          child: Container(
+            width: 60,
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            decoration: BoxDecoration(
+              color: streak.isProbation
+                  ? Colors.orange.withValues(alpha: 0.13)
+                  : const Color(0xFFFFF0E0),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Column(children: [
+              Icon(
+                streak.isProbation
+                    ? Icons.hourglass_bottom_rounded
+                    : Icons.local_fire_department_rounded,
+                color: streak.isProbation ? Colors.orange : Colors.deepOrange,
+                size: 25,
+              ),
+              Text(
+                streak.isProbation
+                    ? '${streak.recoveryDays}/${StudyStreakService.recoveryGoalDays}'
+                    : '${streak.currentStreak}',
+                style:
+                    const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+              ),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showStreakDialog(StudyStreakService streak) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AnimatedBuilder(
+        animation: streak,
+        builder: (context, _) {
+          final studied = Duration(seconds: streak.todaySeconds);
+          final remaining = Duration(seconds: streak.remainingSeconds);
+          return AlertDialog(
+            title: Row(children: [
+              Icon(
+                streak.isProbation
+                    ? Icons.hourglass_bottom_rounded
+                    : Icons.local_fire_department_rounded,
+                color: streak.isProbation ? Colors.orange : Colors.deepOrange,
+              ),
+              const SizedBox(width: 8),
+              Text(streak.statusLabel),
+            ]),
+            content: SizedBox(
+              width: 360,
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                LinearProgressIndicator(value: streak.progress, minHeight: 10),
+                const SizedBox(height: 12),
+                Text(
+                  streak.goalComplete
+                      ? 'Today\'s ${StudyStreakService.dailyGoalMinutes}-minute goal is complete!'
+                      : 'Studied ${studied.inMinutes} min today. '
+                          '${remaining.inMinutes + (remaining.inSeconds % 60 == 0 ? 0 : 1)} min remaining.',
+                ),
+                const SizedBox(height: 8),
+                Text('Longest streak: ${streak.longestStreak} days'),
+                if (streak.isProbation) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Complete ${StudyStreakService.dailyGoalMinutes} minutes on '
+                    '${StudyStreakService.recoveryGoalDays} consecutive days to '
+                    'reburn your streak. Missing 2 consecutive days resets it.',
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+                const SizedBox(height: 12),
+                Text(
+                  'Only active time in Notes, Tutor, and Games counts. '
+                  'The timer pauses after 3 minutes without activity.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                ),
+              ]),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Got it'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 
   Widget _buildNotesPanel() {
@@ -527,8 +675,7 @@ class _HomeScreenState extends State<HomeScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 20),
         child: Row(children: [
           const Text('My Notes',
-              style: TextStyle(
-                  fontSize: 22, fontWeight: FontWeight.w700)),
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
           const Spacer(),
           IconButton(
             icon: Icon(Icons.search, color: Colors.grey.shade600),
@@ -557,7 +704,8 @@ class _HomeScreenState extends State<HomeScreen> {
       padding: const EdgeInsets.all(20),
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: crossCount,
-        mainAxisSpacing: 16, crossAxisSpacing: 16,
+        mainAxisSpacing: 16,
+        crossAxisSpacing: 16,
         childAspectRatio: 0.82,
       ),
       itemCount: total,
@@ -582,25 +730,26 @@ class _HomeScreenState extends State<HomeScreen> {
           border: Border.all(
               color: const Color(0xFF6C63FF).withOpacity(0.4), width: 2),
           boxShadow: [
-            BoxShadow(color: Colors.black.withOpacity(0.06),
-                blurRadius: 8, offset: const Offset(0, 3)),
+            BoxShadow(
+                color: Colors.black.withOpacity(0.06),
+                blurRadius: 8,
+                offset: const Offset(0, 3)),
           ],
         ),
-        child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
           Container(
-            width: 52, height: 52,
+            width: 52,
+            height: 52,
             decoration: BoxDecoration(
                 color: const Color(0xFFEEEDFE),
                 borderRadius: BorderRadius.circular(14)),
-            child: const Icon(Icons.add, size: 32,
-                color: Color(0xFF6C63FF)),
+            child: const Icon(Icons.add, size: 32, color: Color(0xFF6C63FF)),
           ),
           const SizedBox(height: 12),
           const Text('New',
               style: TextStyle(
-                  fontSize: 14, fontWeight: FontWeight.w600,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
                   color: Color(0xFF6C63FF))),
         ]),
       ),
@@ -632,29 +781,25 @@ class _HomeScreenState extends State<HomeScreen> {
                     : Colors.white,
             borderRadius: BorderRadius.circular(18),
             border: Border.all(
-              color: isHovered
-                  ? folder.color
-                  : folder.color.withOpacity(0.35),
+              color: isHovered ? folder.color : folder.color.withOpacity(0.35),
               width: isHovered ? 2.5 : 1.5,
             ),
             boxShadow: [
               BoxShadow(
-                  color: folder.color
-                      .withOpacity(isHovered ? 0.25 : 0.1),
+                  color: folder.color.withOpacity(isHovered ? 0.25 : 0.1),
                   blurRadius: isHovered ? 16 : 8,
                   offset: const Offset(0, 3)),
             ],
           ),
-          child:
-              Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
             Stack(alignment: Alignment.center, children: [
               Icon(Icons.folder_rounded, size: 64, color: folder.color),
               if (count > 0 || subCount > 0)
                 Positioned(
                   bottom: 12,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 2),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
                         color: Colors.white,
                         borderRadius: BorderRadius.circular(8)),
@@ -672,15 +817,15 @@ class _HomeScreenState extends State<HomeScreen> {
               child: Text(folder.name,
                   style: const TextStyle(
                       fontWeight: FontWeight.w600, fontSize: 13),
-                  maxLines: 1, overflow: TextOverflow.ellipsis),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis),
             ),
             const SizedBox(height: 4),
             Text(
                 subCount == 0
                     ? '$count note${count == 1 ? '' : 's'}'
                     : '$count note${count == 1 ? '' : 's'} • $subCount folder${subCount == 1 ? '' : 's'}',
-                style: TextStyle(
-                    fontSize: 11, color: Colors.grey.shade500)),
+                style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
             if (isHovered)
               Padding(
                 padding: const EdgeInsets.only(top: 6),
@@ -698,14 +843,20 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _noteCard(Note note) {
     final pastels = [
-      const Color(0xFFFFF0F0), const Color(0xFFF0F4FF),
-      const Color(0xFFF0FFF4), const Color(0xFFFFFBF0),
-      const Color(0xFFF8F0FF), const Color(0xFFF0FAFF),
+      const Color(0xFFFFF0F0),
+      const Color(0xFFF0F4FF),
+      const Color(0xFFF0FFF4),
+      const Color(0xFFFFFBF0),
+      const Color(0xFFF8F0FF),
+      const Color(0xFFF0FAFF),
     ];
     final accents = [
-      const Color(0xFFFFCDD2), const Color(0xFFBBDEFB),
-      const Color(0xFFC8E6C9), const Color(0xFFFFECB3),
-      const Color(0xFFE1BEE7), const Color(0xFFB2EBF2),
+      const Color(0xFFFFCDD2),
+      const Color(0xFFBBDEFB),
+      const Color(0xFFC8E6C9),
+      const Color(0xFFFFECB3),
+      const Color(0xFFE1BEE7),
+      const Color(0xFFB2EBF2),
     ];
     final idx = note.id.codeUnits.first % pastels.length;
     final bg = pastels[idx];
@@ -715,7 +866,8 @@ class _HomeScreenState extends State<HomeScreen> {
       elevation: 10,
       borderRadius: BorderRadius.circular(14),
       child: Container(
-        width: 110, height: 130,
+        width: 110,
+        height: 130,
         decoration: BoxDecoration(
           color: bg,
           borderRadius: BorderRadius.circular(14),
@@ -727,9 +879,10 @@ class _HomeScreenState extends State<HomeScreen> {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Text(note.title,
-                style: const TextStyle(
-                    fontSize: 11, fontWeight: FontWeight.w600),
-                maxLines: 2, textAlign: TextAlign.center,
+                style:
+                    const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+                maxLines: 2,
+                textAlign: TextAlign.center,
                 overflow: TextOverflow.ellipsis),
           ),
         ]),
@@ -740,8 +893,8 @@ class _HomeScreenState extends State<HomeScreen> {
       data: note,
       dragAnchorStrategy: pointerDragAnchorStrategy,
       feedback: feedback,
-      childWhenDragging: Opacity(
-          opacity: 0.35, child: _noteCardInner(note, bg, accent)),
+      childWhenDragging:
+          Opacity(opacity: 0.35, child: _noteCardInner(note, bg, accent)),
       onDragStarted: () => setState(() => _draggingOverFolderId = null),
       onDragEnd: (_) => setState(() => _draggingOverFolderId = null),
       child: GestureDetector(
@@ -763,15 +916,16 @@ class _HomeScreenState extends State<HomeScreen> {
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             Container(
-              width: 40, height: 4,
+              width: 40,
+              height: 4,
               margin: const EdgeInsets.only(bottom: 12),
               decoration: BoxDecoration(
                   color: Colors.grey.shade300,
                   borderRadius: BorderRadius.circular(2)),
             ),
             Text(note.title,
-                style: const TextStyle(
-                    fontSize: 16, fontWeight: FontWeight.w600)),
+                style:
+                    const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
             const SizedBox(height: 12),
             ListTile(
               leading: const Icon(Icons.drive_file_move_outlined,
@@ -804,24 +958,23 @@ class _HomeScreenState extends State<HomeScreen> {
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: accent, width: 1.5),
         boxShadow: [
-          BoxShadow(color: accent.withOpacity(0.4),
-              blurRadius: 8, offset: const Offset(0, 3)),
+          BoxShadow(
+              color: accent.withOpacity(0.4),
+              blurRadius: 8,
+              offset: const Offset(0, 3)),
         ],
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Expanded(
           child: ClipRRect(
-            borderRadius:
-                const BorderRadius.vertical(top: Radius.circular(17)),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(17)),
             child: Container(
               color: Colors.white.withOpacity(0.6),
               child: note.pages.first.strokes.isEmpty
                   ? Center(
-                      child: Icon(Icons.edit_outlined,
-                          color: accent, size: 36))
+                      child: Icon(Icons.edit_outlined, color: accent, size: 36))
                   : CustomPaint(
-                      painter:
-                          _PreviewPainter(note.pages.first.strokes),
+                      painter: _PreviewPainter(note.pages.first.strokes),
                       size: Size.infinite,
                     ),
             ),
@@ -829,25 +982,23 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         Padding(
           padding: const EdgeInsets.all(12),
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(note.title,
-                style: const TextStyle(
-                    fontWeight: FontWeight.w600, fontSize: 13),
-                maxLines: 1, overflow: TextOverflow.ellipsis),
+                style:
+                    const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis),
             const SizedBox(height: 4),
             Row(children: [
               Icon(Icons.layers_outlined,
                   size: 11, color: Colors.grey.shade500),
               const SizedBox(width: 3),
               Text('${note.pages.length}p',
-                  style: TextStyle(
-                      fontSize: 11, color: Colors.grey.shade500)),
+                  style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
               const Spacer(),
               Text(_fmt(note.updatedAt),
-                  style: TextStyle(
-                      fontSize: 10, color: Colors.grey.shade500)),
+                  style: TextStyle(fontSize: 10, color: Colors.grey.shade500)),
             ]),
           ]),
         ),
@@ -869,15 +1020,13 @@ class _HomeScreenState extends State<HomeScreen> {
                 TextField(
                   autofocus: true,
                   decoration: const InputDecoration(
-                      hintText: 'Note title…',
-                      prefixIcon: Icon(Icons.search)),
+                      hintText: 'Note title…', prefixIcon: Icon(Icons.search)),
                   onChanged: (v) => setS(() => query = v),
                 ),
                 const SizedBox(height: 12),
                 ..._notes
-                    .where((n) => n.title
-                        .toLowerCase()
-                        .contains(query.toLowerCase()))
+                    .where((n) =>
+                        n.title.toLowerCase().contains(query.toLowerCase()))
                     .map((n) => ListTile(
                           leading: const Icon(Icons.note_outlined),
                           title: Text(n.title),
@@ -904,8 +1053,12 @@ class _HomeScreenState extends State<HomeScreen> {
 class _GridItem {
   final Note? note;
   final NoteFolder? folder;
-  const _GridItem.note(Note n) : note = n, folder = null;
-  const _GridItem.folder(NoteFolder f) : folder = f, note = null;
+  const _GridItem.note(Note n)
+      : note = n,
+        folder = null;
+  const _GridItem.folder(NoteFolder f)
+      : folder = f,
+        note = null;
 }
 
 class _PreviewPainter extends CustomPainter {

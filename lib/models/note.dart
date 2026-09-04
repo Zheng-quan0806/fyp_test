@@ -7,17 +7,22 @@ enum PaperStyle { blank, lined, grid, twoColumn, dotted }
 extension PaperStyleExt on PaperStyle {
   String get label {
     switch (this) {
-      case PaperStyle.blank:      return 'Blank';
-      case PaperStyle.lined:      return 'Lined';
-      case PaperStyle.grid:       return 'Grid';
-      case PaperStyle.twoColumn:  return 'Two Column';
-      case PaperStyle.dotted:     return 'Dotted';
+      case PaperStyle.blank:
+        return 'Blank';
+      case PaperStyle.lined:
+        return 'Lined';
+      case PaperStyle.grid:
+        return 'Grid';
+      case PaperStyle.twoColumn:
+        return 'Two Column';
+      case PaperStyle.dotted:
+        return 'Dotted';
     }
   }
+
   String get toJson => name;
-  static PaperStyle fromJson(String s) =>
-      PaperStyle.values.firstWhere((e) => e.name == s,
-          orElse: () => PaperStyle.lined);
+  static PaperStyle fromJson(String s) => PaperStyle.values
+      .firstWhere((e) => e.name == s, orElse: () => PaperStyle.lined);
 }
 
 // ── Drawn point ───────────────────────────────────────────────────────────
@@ -29,8 +34,10 @@ class DrawnPoint {
   DrawnPoint({this.point, required this.color, required this.strokeWidth});
 
   Map<String, dynamic> toJson() => {
-        'x': point?.dx, 'y': point?.dy,
-        'color': color.value, 'sw': strokeWidth,
+        'x': point?.dx,
+        'y': point?.dy,
+        'color': color.toARGB32(),
+        'sw': strokeWidth,
       };
 
   factory DrawnPoint.fromJson(Map<String, dynamic> j) => DrawnPoint(
@@ -97,7 +104,8 @@ class Note {
   set strokes(List<DrawnPoint> s) => pages.first.strokes = s;
 
   Map<String, dynamic> toJson() => {
-        'id': id, 'title': title,
+        'id': id,
+        'title': title,
         'pages': pages.map((p) => p.toJson()).toList(),
         'updatedAt': updatedAt.toIso8601String(),
         'folderId': folderId,
@@ -109,13 +117,15 @@ class Note {
           .map((s) => DrawnPoint.fromJson(s as Map<String, dynamic>))
           .toList();
       return Note(
-        id: j['id'] as String, title: j['title'] as String,
+        id: j['id'] as String,
+        title: j['title'] as String,
         pages: [NotePage(id: 'page-0', strokes: old)],
         updatedAt: DateTime.parse(j['updatedAt'] as String),
       );
     }
     return Note(
-      id: j['id'] as String, title: j['title'] as String,
+      id: j['id'] as String,
+      title: j['title'] as String,
       pages: (j['pages'] as List)
           .map((p) => NotePage.fromJson(p as Map<String, dynamic>))
           .toList(),
@@ -135,6 +145,7 @@ class NoteFolder {
   String name;
   String colorHex; // e.g. '6C63FF'
   DateTime createdAt;
+  DateTime updatedAt;
   String? parentFolderId; // null = root folder, otherwise inside another folder
 
   NoteFolder({
@@ -142,15 +153,18 @@ class NoteFolder {
     required this.name,
     this.colorHex = '6C63FF',
     required this.createdAt,
+    DateTime? updatedAt,
     this.parentFolderId,
-  });
+  }) : updatedAt = updatedAt ?? createdAt;
 
   Color get color => Color(int.parse('FF$colorHex', radix: 16));
 
   Map<String, dynamic> toJson() => {
-        'id': id, 'name': name,
+        'id': id,
+        'name': name,
         'color': colorHex,
         'createdAt': createdAt.toIso8601String(),
+        'updatedAt': updatedAt.toIso8601String(),
         'parentFolderId': parentFolderId,
       };
 
@@ -159,6 +173,7 @@ class NoteFolder {
         name: j['name'] as String,
         colorHex: j['color'] as String? ?? '6C63FF',
         createdAt: DateTime.parse(j['createdAt'] as String),
+        updatedAt: DateTime.tryParse(j['updatedAt']?.toString() ?? ''),
         parentFolderId: j['parentFolderId'] as String?,
       );
 }

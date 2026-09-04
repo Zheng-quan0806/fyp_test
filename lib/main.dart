@@ -1,30 +1,71 @@
 import 'package:flutter/material.dart';
-import 'services/google_auth_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
 import 'screens/home_screen.dart';
+import 'services/ai_chat_store.dart';
+import 'services/calendar_reminder_service.dart';
+import 'services/google_auth_service.dart';
+import 'services/study_streak_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  const supabaseUrl = String.fromEnvironment('SUPABASE_URL');
+  const supabasePublishableKey =
+      String.fromEnvironment('SUPABASE_PUBLISHABLE_KEY');
+
+  if (supabaseUrl.isEmpty || supabasePublishableKey.isEmpty) {
+    throw StateError(
+      'Missing Supabase configuration. '
+      'Run with --dart-define-from-file=supabase.json',
+    );
+  }
+
+  await Supabase.initialize(
+    url: supabaseUrl,
+    publishableKey: supabasePublishableKey,
+  );
+
   await GoogleAuthService.instance.initialize();
-  runApp(const NotebookApp());
+  await AiChatStore.instance.initialize();
+  await StudyStreakService.instance.initialize();
+  await CalendarReminderService.instance.initialize();
+  final preferences = await SharedPreferences.getInstance();
+  final initialDarkMode = preferences.getBool('dark_mode') ?? false;
+  runApp(NotebookApp(initialDarkMode: initialDarkMode));
 }
 
 class NotebookApp extends StatefulWidget {
-  const NotebookApp({super.key});
+  final bool initialDarkMode;
 
-  static _NotebookAppState? of(BuildContext context) =>
-      context.findAncestorStateOfType<_NotebookAppState>();
+  const NotebookApp({super.key, this.initialDarkMode = false});
+
+  static void setDarkMode(BuildContext context, bool dark) {
+    context.findAncestorStateOfType<_NotebookAppState>()?.toggleDarkMode(dark);
+  }
 
   @override
   State<NotebookApp> createState() => _NotebookAppState();
 }
 
 class _NotebookAppState extends State<NotebookApp> {
-  ThemeMode _themeMode = ThemeMode.light;
+  late ThemeMode _themeMode;
 
-  void toggleDarkMode(bool dark) =>
-      setState(() => _themeMode = dark ? ThemeMode.dark : ThemeMode.light);
+  @override
+  void initState() {
+    super.initState();
+    _themeMode = widget.initialDarkMode ? ThemeMode.dark : ThemeMode.light;
+  }
 
-  bool get isDark => _themeMode == ThemeMode.dark;
+  void toggleDarkMode(bool dark) {
+    setState(() {
+      _themeMode = dark ? ThemeMode.dark : ThemeMode.light;
+    });
+    SharedPreferences.getInstance().then(
+      (preferences) => preferences.setBool('dark_mode', dark),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -34,13 +75,17 @@ class _NotebookAppState extends State<NotebookApp> {
       themeMode: _themeMode,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
-            seedColor: const Color(0xFF6C63FF), brightness: Brightness.light),
+          seedColor: const Color(0xFF6C63FF),
+          brightness: Brightness.light,
+        ),
         scaffoldBackgroundColor: const Color(0xFFF5F4FF),
         useMaterial3: true,
       ),
       darkTheme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
-            seedColor: const Color(0xFF6C63FF), brightness: Brightness.dark),
+          seedColor: const Color(0xFF6C63FF),
+          brightness: Brightness.dark,
+        ),
         scaffoldBackgroundColor: const Color(0xFF12121E),
         useMaterial3: true,
       ),

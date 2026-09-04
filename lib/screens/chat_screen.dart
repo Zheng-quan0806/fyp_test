@@ -1,33 +1,12 @@
-import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
-class AiChatThread {
-  final String id;
-  String title;
-  final List<AiChatMessage> messages;
-  DateTime updatedAt;
-
-  AiChatThread({
-    required this.id,
-    required this.title,
-    required this.messages,
-    required this.updatedAt,
-  });
-}
-
-class AiChatMessage {
-  final String id;
-  final String text;
-  final bool isUser;
-  final DateTime time;
-
-  AiChatMessage({
-    required this.id,
-    required this.text,
-    required this.isUser,
-    required this.time,
-  });
-}
+import '../services/ai_chat_store.dart';
+import '../services/ai_service.dart';
+import '../services/clipboard_image_service.dart';
+import '../services/google_auth_service.dart';
+import '../utils/ai_text_formatter.dart';
+import '../widgets/expandable_image.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -39,127 +18,89 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _inputCtrl = TextEditingController();
   final ScrollController _scrollCtrl = ScrollController();
-  final Random _random = Random();
+  final AiChatStore _store = AiChatStore.instance;
 
-  late final List<AiChatThread> _threads = [
-    AiChatThread(
-      id: 'thread-1',
-      title: 'Research assistant',
-      updatedAt: DateTime.now().subtract(const Duration(minutes: 8)),
-      messages: [
-        AiChatMessage(
-          id: 'm1',
-          text: 'Hi! I can help you brainstorm notes, summarize ideas, or turn rough points into cleaner study content.',
-          isUser: false,
-          time: DateTime.now().subtract(const Duration(minutes: 9)),
-        ),
-      ],
-    ),
-    AiChatThread(
-      id: 'thread-2',
-      title: 'FYP outline help',
-      updatedAt: DateTime.now().subtract(const Duration(hours: 2)),
-      messages: [
-        AiChatMessage(
-          id: 'm2',
-          text: 'Can you help me structure my final year project report?',
-          isUser: true,
-          time: DateTime.now().subtract(const Duration(hours: 2, minutes: 4)),
-        ),
-        AiChatMessage(
-          id: 'm3',
-          text: 'Yes. A solid structure is: introduction, problem statement, objectives, literature review, methodology, implementation, testing, results, and conclusion.',
-          isUser: false,
-          time: DateTime.now().subtract(const Duration(hours: 2, minutes: 3)),
-        ),
-      ],
-    ),
-  ];
-
-  AiChatThread? _selectedThread;
-  bool _thinking = false;
+  List<AiChatThread> get _threads => _store.threads;
+  AiChatThread? get _selectedThread => _store.selectedThread;
+  bool get _thinking => _store.thinking;
+  AiImageAttachment? get _pendingImage => _store.pendingImage;
 
   @override
   void initState() {
     super.initState();
-    _selectedThread = _threads.first;
+    _store.addListener(_handleStoreChanged);
   }
 
   @override
   void dispose() {
+    _store.removeListener(_handleStoreChanged);
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
   }
 
-  List<AiChatMessage> get _messages =>
-      _selectedThread?.messages ?? const <AiChatMessage>[];
+  List<AiChatMessage> get _messages => _store.messages;
 
-  void _newChat() {
-    final thread = AiChatThread(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      title: 'New chat',
-      updatedAt: DateTime.now(),
-      messages: [
-        AiChatMessage(
-          id: 'welcome-${DateTime.now().millisecondsSinceEpoch}',
-          text: 'Ask me anything about your notes, assignments, or ideas. No account is needed here.',
-          isUser: false,
-          time: DateTime.now(),
+  void _handleStoreChanged() {
+    if (!mounted) return;
+    if (_inputCtrl.text != _store.draft) {
+      _inputCtrl.value = TextEditingValue(
+        text: _store.draft,
+        selection: TextSelection.collapsed(offset: _store.draft.length),
+      );
+    }
+    setState(() {});
+    _scrollToBottom();
+  }
+
+  void _newChat() => _store.newChat();
+
+  Future<void> _deleteThread(AiChatThread thread) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete this chat?'),
+        content: Text(
+          '“${thread.title}” and all of its messages will be permanently deleted.',
         ),
-      ],
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
     );
+    if (confirmed != true) return;
 
-    setState(() {
-      _threads.insert(0, thread);
-      _selectedThread = thread;
-    });
+    try {
+      await _store.deleteThread(thread);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Chat deleted.')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not delete chat: $error')),
+      );
+    }
   }
 
   Future<void> _send() async {
     final text = _inputCtrl.text.trim();
-    final thread = _selectedThread;
-    if (text.isEmpty || thread == null || _thinking) return;
-
-    final userMessage = AiChatMessage(
-      id: 'u-${DateTime.now().millisecondsSinceEpoch}',
-      text: text,
-      isUser: true,
-      time: DateTime.now(),
-    );
-
-    setState(() {
-      thread.messages.add(userMessage);
-      thread.updatedAt = DateTime.now();
-      if (thread.title == 'New chat') {
-        thread.title = _titleFromPrompt(text);
-      }
-      _thinking = true;
-      _inputCtrl.clear();
-    });
-
-    _scrollToBottom();
-
-    await Future.delayed(const Duration(milliseconds: 550));
-
-    if (!mounted) return;
-
-    final reply = AiChatMessage(
-      id: 'a-${DateTime.now().millisecondsSinceEpoch}',
-      text: _buildAssistantReply(text),
-      isUser: false,
-      time: DateTime.now(),
-    );
-
-    setState(() {
-      thread.messages.add(reply);
-      thread.updatedAt = DateTime.now();
-      _thinking = false;
-      _threads.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-      _selectedThread = _threads.firstWhere((t) => t.id == thread.id);
-    });
-
-    _scrollToBottom();
+    if ((text.isEmpty && _pendingImage == null) ||
+        _selectedThread == null ||
+        _thinking) {
+      return;
+    }
+    _inputCtrl.clear();
+    await _store.send(text);
   }
 
   void _scrollToBottom() {
@@ -174,48 +115,49 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  String _titleFromPrompt(String text) {
-    final words = text
-        .split(RegExp(r'\s+'))
-        .where((w) => w.trim().isNotEmpty)
-        .take(4)
-        .toList();
-    return words.isEmpty ? 'New chat' : words.join(' ');
+  Future<void> _pasteFromClipboard() async {
+    try {
+      final image = await ClipboardImageService.readImage();
+      if (image == null) {
+        await ClipboardImageService.pastePlainText(_inputCtrl);
+        _store.updateDraft(_inputCtrl.text);
+        return;
+      }
+
+      _attachImage(image);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Clipboard image could not be read ($error). Use the image button to choose the file.',
+          ),
+        ),
+      );
+    }
   }
 
-  String _buildAssistantReply(String prompt) {
-    final lower = prompt.toLowerCase();
-
-    if (lower.contains('note') || lower.contains('summary')) {
-      return 'Here is a simple note-taking pattern: topic, 3 key points, one example, then a short summary at the end. If you want, I can format your content that way.';
+  Future<void> _pickImage() async {
+    try {
+      final image = await ClipboardImageService.pickImage();
+      if (image != null) _attachImage(image);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unable to attach image: $error')),
+      );
     }
-    if (lower.contains('fyp') || lower.contains('project')) {
-      return 'For an FYP, I would usually break it into problem, objective, approach, implementation, and evaluation. If you paste your topic, I can turn it into a cleaner outline.';
-    }
-    if (lower.contains('study') || lower.contains('exam')) {
-      return 'A good study flow is: review concepts, test recall, then create a compact cheat-sheet style summary. I can help generate that from your notes.';
-    }
-    if (lower.contains('code') || lower.contains('flutter')) {
-      return 'If this is a Flutter task, I can help with UI structure, widget breakdown, state flow, or debugging steps. Paste the part you are stuck on and I will walk through it.';
-    }
-
-    final starters = [
-      'Here is a clean starting point.',
-      'This is how I would approach it.',
-      'A simple way to structure that is this.',
-    ];
-    return '${starters[_random.nextInt(starters.length)]} '
-        'First define the goal clearly, then break it into smaller sections, and finally turn each section into concrete actions or notes. '
-        'If you want, send me the exact text and I can rewrite it in a more polished way.';
   }
 
-  String _timeLabel(DateTime dt) {
-    final now = DateTime.now();
-    final diff = now.difference(dt);
-    if (diff.inMinutes < 1) return 'now';
-    if (diff.inHours < 1) return '${diff.inMinutes}m';
-    if (diff.inDays < 1) return '${diff.inHours}h';
-    return '${dt.day}/${dt.month}';
+  void _attachImage(AiImageAttachment image) {
+    if (!mounted) return;
+    if (image.bytes.length > ClipboardImageService.maxImageBytes) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please use an image smaller than 6 MB.')),
+      );
+      return;
+    }
+    _store.attachImage(image);
   }
 
   @override
@@ -231,23 +173,49 @@ class _ChatScreenState extends State<ChatScreen> {
           child: Row(
             children: [
               const Text(
-                'Notebook GPT',
+                'Notebook Tutor',
                 style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
               ),
               const SizedBox(width: 12),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFE9FFF5),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: const Text(
-                  'No login',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: Color(0xFF0F9D58),
+              ValueListenableBuilder<GoogleAuthUser?>(
+                valueListenable: GoogleAuthService.instance.currentUser,
+                builder: (context, user, _) => Tooltip(
+                  message: user?.email ?? 'Using a guest account',
+                  child: Container(
+                    constraints: const BoxConstraints(maxWidth: 170),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE9FFF5),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          user == null
+                              ? Icons.person_outline
+                              : Icons.verified_user_outlined,
+                          size: 14,
+                          color: const Color(0xFF0F9D58),
+                        ),
+                        const SizedBox(width: 5),
+                        Flexible(
+                          child: Text(
+                            user?.displayName ?? 'Guest mode',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFF0F9D58),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -342,7 +310,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     : thread.messages.last.text;
 
                 return GestureDetector(
-                  onTap: () => setState(() => _selectedThread = thread),
+                  onTap: () => _store.selectThread(thread),
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 150),
                     margin: const EdgeInsets.only(bottom: 8),
@@ -384,9 +352,8 @@ class _ChatScreenState extends State<ChatScreen> {
                                 thread.title,
                                 style: TextStyle(
                                   fontWeight: FontWeight.w600,
-                                  color: selected
-                                      ? const Color(0xFF0D7A60)
-                                      : null,
+                                  color:
+                                      selected ? const Color(0xFF0D7A60) : null,
                                 ),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
@@ -404,11 +371,13 @@ class _ChatScreenState extends State<ChatScreen> {
                             ],
                           ),
                         ),
-                        const SizedBox(width: 8),
-                        Text(
-                          _timeLabel(thread.updatedAt),
-                          style: TextStyle(
-                            fontSize: 11,
+                        IconButton(
+                          visualDensity: VisualDensity.compact,
+                          tooltip: 'Delete chat',
+                          onPressed: () => _deleteThread(thread),
+                          icon: Icon(
+                            Icons.delete_outline,
+                            size: 18,
                             color: Colors.grey.shade500,
                           ),
                         ),
@@ -427,7 +396,37 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget _buildConversationArea(bool isDark) {
     final thread = _selectedThread;
     if (thread == null) {
-      return const Center(child: Text('Select a conversation'));
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.auto_awesome,
+              size: 42,
+              color: Color(0xFF10A37F),
+            ),
+            const SizedBox(height: 14),
+            const Text(
+              'No tutor chats yet',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Start a new chat when you are ready to learn.',
+              style: TextStyle(color: Colors.grey.shade500),
+            ),
+            const SizedBox(height: 18),
+            FilledButton.icon(
+              onPressed: _newChat,
+              icon: const Icon(Icons.add),
+              label: const Text('New Tutor Chat'),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF10A37F),
+              ),
+            ),
+          ],
+        ),
+      );
     }
 
     return Container(
@@ -470,7 +469,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         ),
                       ),
                       Text(
-                        'ChatGPT-style assistant without sign-in',
+                        'Tutor-first Gemini assistant',
                         style: TextStyle(
                           fontSize: 12,
                           color: Colors.grey.shade500,
@@ -510,6 +509,40 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
       child: Column(
         children: [
+          if (_pendingImage != null) ...[
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Stack(
+                children: [
+                  ExpandableImage.memory(
+                    _pendingImage!.bytes,
+                    width: 120,
+                    height: 88,
+                  ),
+                  Positioned(
+                    right: 4,
+                    top: 4,
+                    child: GestureDetector(
+                      onTap: _store.removePendingImage,
+                      child: Container(
+                        padding: const EdgeInsets.all(3),
+                        decoration: const BoxDecoration(
+                          color: Colors.black54,
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.close,
+                          color: Colors.white,
+                          size: 16,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
           Container(
             constraints: const BoxConstraints(minHeight: 58),
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -521,26 +554,34 @@ class _ChatScreenState extends State<ChatScreen> {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                const Padding(
-                  padding: EdgeInsets.only(bottom: 6),
-                  child: Icon(
-                    Icons.auto_awesome_outlined,
-                    size: 18,
+                IconButton(
+                  tooltip: 'Choose image',
+                  onPressed: _pickImage,
+                  icon: const Icon(
+                    Icons.add_photo_alternate_outlined,
+                    size: 20,
                     color: Color(0xFF10A37F),
                   ),
                 ),
-                const SizedBox(width: 10),
+                const SizedBox(width: 4),
                 Expanded(
-                  child: TextField(
-                    controller: _inputCtrl,
-                    minLines: 1,
-                    maxLines: 5,
-                    textInputAction: TextInputAction.send,
-                    onSubmitted: (_) => _send(),
-                    decoration: const InputDecoration(
-                      hintText: 'Message Notebook GPT...',
-                      border: InputBorder.none,
-                      isCollapsed: true,
+                  child: CallbackShortcuts(
+                    bindings: {
+                      const SingleActivator(LogicalKeyboardKey.keyV,
+                          control: true): _pasteFromClipboard,
+                    },
+                    child: TextField(
+                      controller: _inputCtrl,
+                      onChanged: _store.updateDraft,
+                      minLines: 1,
+                      maxLines: 5,
+                      textInputAction: TextInputAction.send,
+                      onSubmitted: (_) => _send(),
+                      decoration: const InputDecoration(
+                        hintText: 'Ask Notebook Tutor...',
+                        border: InputBorder.none,
+                        isCollapsed: true,
+                      ),
                     ),
                   ),
                 ),
@@ -566,7 +607,7 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
           const SizedBox(height: 8),
           Text(
-            'This version opens directly without account setup. It is a local GPT-style assistant UI.',
+            'Powered by Gemini through a secure Supabase Edge Function.',
             style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
           ),
         ],
@@ -586,9 +627,22 @@ class _ChatScreenState extends State<ChatScreen> {
             color: const Color(0xFF10A37F),
             borderRadius: BorderRadius.circular(18),
           ),
-          child: Text(
-            msg.text,
-            style: const TextStyle(color: Colors.white, height: 1.45),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (msg.image != null) ...[
+                ExpandableImage.memory(
+                  msg.image!.bytes,
+                  width: 320,
+                  height: 220,
+                ),
+                const SizedBox(height: 10),
+              ],
+              Text(
+                msg.text,
+                style: const TextStyle(color: Colors.white, height: 1.45),
+              ),
+            ],
           ),
         ),
       );
@@ -622,7 +676,7 @@ class _ChatScreenState extends State<ChatScreen> {
           const SizedBox(width: 12),
           Expanded(
             child: Text(
-              msg.text,
+              formatAiText(msg.text),
               style: const TextStyle(height: 1.55),
             ),
           ),
@@ -649,7 +703,7 @@ class _ChatScreenState extends State<ChatScreen> {
             child: CircularProgressIndicator(strokeWidth: 2),
           ),
           SizedBox(width: 12),
-          Text('Notebook GPT is thinking...'),
+          Text('Notebook Tutor is thinking...'),
         ],
       ),
     );
