@@ -31,6 +31,8 @@ class _CanvasScreenState extends State<CanvasScreen> {
   bool _importing = false;
   bool _saving = false;
   bool _saveAgain = false;
+  bool _allowPop = false;
+  bool _handlingClose = false;
   String? _saveError;
   int _changeRevision = 0;
   Timer? _autoSaveTimer;
@@ -76,6 +78,7 @@ class _CanvasScreenState extends State<CanvasScreen> {
   }
 
   void _markChanged() {
+    if (!mounted) return;
     _hasChanges = true;
     _saveError = null;
     _changeRevision++;
@@ -86,7 +89,9 @@ class _CanvasScreenState extends State<CanvasScreen> {
     Duration delay = const Duration(milliseconds: 900),
   ]) {
     _autoSaveTimer?.cancel();
-    _autoSaveTimer = Timer(delay, () => unawaited(_save()));
+    _autoSaveTimer = Timer(delay, () {
+      if (mounted) unawaited(_save());
+    });
   }
 
   void _onScroll() {
@@ -192,6 +197,7 @@ class _CanvasScreenState extends State<CanvasScreen> {
         _pages[_currentPageIndex] = NotePage(
           id: p.id,
           strokes: p.strokes,
+          textBoxes: p.textBoxes,
           paperStyle: style,
           backgroundImageBase64: p.backgroundImageBase64,
           sourceFileName: p.sourceFileName,
@@ -265,7 +271,8 @@ class _CanvasScreenState extends State<CanvasScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Clear page?'),
-        content: const Text('All strokes will be removed.'),
+        content:
+            const Text('All handwriting, shapes, and text will be removed.'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
@@ -292,11 +299,13 @@ class _CanvasScreenState extends State<CanvasScreen> {
   }
 
   Future<bool> _save() async {
+    if (!mounted) return false;
     _autoSaveTimer?.cancel();
     if (_saving) {
       _saveAgain = true;
       while (_saving) {
         await Future<void>.delayed(const Duration(milliseconds: 40));
+        if (!mounted) return false;
       }
       if (_hasChanges) return _save();
       return true;
@@ -316,21 +325,16 @@ class _CanvasScreenState extends State<CanvasScreen> {
         updatedAt: DateTime.now(),
         folderId: widget.note.folderId,
       );
-      final all = await _service.loadNotes();
-      final idx = all.indexWhere((note) => note.id == savedNote.id);
-      if (idx >= 0) {
-        all[idx] = savedNote;
-      } else {
-        all.insert(0, savedNote);
-      }
-      await _service.saveNotes(all);
+      final cloudSynced = await _service.saveNote(savedNote);
 
       widget.note.pages = savedNote.pages;
       widget.note.updatedAt = savedNote.updatedAt;
       if (!mounted) return true;
       setState(() {
         if (savingRevision == _changeRevision) _hasChanges = false;
-        _saveError = null;
+        _saveError = cloudSynced
+            ? null
+            : 'Saved on this device. Supabase synchronization will retry.';
       });
       return true;
     } catch (error) {
@@ -355,21 +359,38 @@ class _CanvasScreenState extends State<CanvasScreen> {
   }
 
   Future<bool> _onWillPop() async {
+    for (final key in _canvasKeys.values) {
+      key.currentState?.finishTextEditing();
+    }
     _autoSaveTimer?.cancel();
     if (!_hasChanges && !_saving) return true;
     final saved = await _save();
     return saved && !_hasChanges;
   }
 
+  Future<void> _requestClose() async {
+    if (_handlingClose || !mounted) return;
+    _handlingClose = true;
+    final canClose = await _onWillPop();
+    if (!mounted) return;
+    if (!canClose) {
+      _handlingClose = false;
+      return;
+    }
+    setState(() => _allowPop = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) Navigator.of(context).pop();
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return StudyActivityRegion(
-      child: PopScope(
-        canPop: false,
-        onPopInvoked: (didPop) async {
-          if (didPop) return;
-          if (await _onWillPop() && mounted) Navigator.of(context).pop();
+      child: PopScope<Object?>(
+        canPop: _allowPop,
+        onPopInvokedWithResult: (didPop, result) {
+          if (!didPop) unawaited(_requestClose());
         },
         child: Scaffold(
           backgroundColor:
@@ -561,9 +582,7 @@ class _CanvasScreenState extends State<CanvasScreen> {
         elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios_new),
-          onPressed: () async {
-            if (await _onWillPop() && mounted) Navigator.of(context).pop();
-          },
+          onPressed: _requestClose,
         ),
         title: Text(widget.note.title,
             style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 17)),
@@ -604,7 +623,7 @@ class _CanvasScreenState extends State<CanvasScreen> {
                     _saving
                         ? 'Saving...'
                         : _saveError != null
-                            ? 'Save failed'
+                            ? 'Sync pending'
                             : _hasChanges
                                 ? 'Saving soon...'
                                 : 'Auto-saved',

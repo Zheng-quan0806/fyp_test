@@ -1,12 +1,15 @@
 import 'dart:async';
 import 'dart:math';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../services/ai_chat_store.dart';
 import '../services/ai_service.dart';
 import '../services/clipboard_image_service.dart';
 import '../services/community_chat_service.dart';
+import '../services/community_unread_service.dart';
 import '../services/google_auth_service.dart';
 import '../utils/ai_text_formatter.dart';
 import '../widgets/expandable_image.dart';
@@ -22,10 +25,12 @@ class FloatingChatButton extends StatefulWidget {
 
 /// Full-page version of the classic group chat used by the sidebar.
 class ClassicChatScreen extends StatelessWidget {
-  const ClassicChatScreen({super.key});
+  final bool isVisible;
+
+  const ClassicChatScreen({super.key, this.isVisible = true});
 
   @override
-  Widget build(BuildContext context) => const _CompactChatView();
+  Widget build(BuildContext context) => _CompactChatView(isVisible: isVisible);
 }
 
 enum _OverlayMode { chat, gpt }
@@ -44,6 +49,7 @@ class _FloatingChatButtonState extends State<FloatingChatButton>
   @override
   void initState() {
     super.initState();
+    unawaited(CommunityUnreadService.instance.initialize());
     _animCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 200),
@@ -85,11 +91,6 @@ class _FloatingChatButtonState extends State<FloatingChatButton>
 
     return Stack(
       children: [
-        if (_panelOpen)
-          GestureDetector(
-            onTap: _togglePanel,
-            child: Container(color: Colors.black26),
-          ),
         if (_panelOpen)
           Positioned(
             right: screen.width - _x < screen.width / 2 ? 12 : null,
@@ -138,10 +139,33 @@ class _FloatingChatButtonState extends State<FloatingChatButton>
                   ),
                 ],
               ),
-              child: Icon(
-                _panelOpen ? Icons.close : Icons.auto_awesome,
-                color: Colors.white,
-                size: 22,
+              child: ValueListenableBuilder<int>(
+                valueListenable: CommunityUnreadService.instance.unreadCount,
+                builder: (context, unreadCount, _) => Stack(
+                  clipBehavior: Clip.none,
+                  alignment: Alignment.center,
+                  children: [
+                    Icon(
+                      _panelOpen ? Icons.close : Icons.auto_awesome,
+                      color: Colors.white,
+                      size: 22,
+                    ),
+                    if (unreadCount > 0)
+                      Positioned(
+                        right: 1,
+                        top: 1,
+                        child: Container(
+                          width: 12,
+                          height: 12,
+                          decoration: BoxDecoration(
+                            color: Colors.redAccent,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 2),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -245,10 +269,15 @@ class _OverlayHeader extends StatelessWidget {
               ),
               child: Row(
                 children: [
-                  _ModeChip(
-                    label: 'Chat',
-                    selected: mode == _OverlayMode.chat,
-                    onTap: () => onModeChanged(_OverlayMode.chat),
+                  ValueListenableBuilder<int>(
+                    valueListenable:
+                        CommunityUnreadService.instance.unreadCount,
+                    builder: (context, unreadCount, _) => _ModeChip(
+                      label: 'Chat',
+                      selected: mode == _OverlayMode.chat,
+                      showUnread: unreadCount > 0,
+                      onTap: () => onModeChanged(_OverlayMode.chat),
+                    ),
                   ),
                   const SizedBox(width: 4),
                   _ModeChip(
@@ -274,11 +303,13 @@ class _OverlayHeader extends StatelessWidget {
 class _ModeChip extends StatelessWidget {
   final String label;
   final bool selected;
+  final bool showUnread;
   final VoidCallback onTap;
 
   const _ModeChip({
     required this.label,
     required this.selected,
+    this.showUnread = false,
     required this.onTap,
   });
 
@@ -294,12 +325,29 @@ class _ModeChip extends StatelessWidget {
             borderRadius: BorderRadius.circular(10),
           ),
           alignment: Alignment.center,
-          child: Text(
-            label,
-            style: TextStyle(
-              fontWeight: FontWeight.w700,
-              color: selected ? const Color(0xFF0B8B6B) : Colors.white,
-            ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                label,
+                style: TextStyle(
+                  fontWeight: FontWeight.w700,
+                  color: selected ? const Color(0xFF0B8B6B) : Colors.white,
+                ),
+              ),
+              if (showUnread) ...[
+                const SizedBox(width: 6),
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: const BoxDecoration(
+                    color: Colors.redAccent,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              ],
+            ],
           ),
         ),
       ),
@@ -308,13 +356,16 @@ class _ModeChip extends StatelessWidget {
 }
 
 class _CompactChatView extends StatefulWidget {
-  const _CompactChatView();
+  final bool isVisible;
+
+  const _CompactChatView({this.isVisible = true});
 
   @override
   State<_CompactChatView> createState() => _CompactChatViewState();
 }
 
 class _CompactChatViewState extends State<_CompactChatView> {
+  final Object _visibilityToken = Object();
   final _ctrl = TextEditingController();
   final _scrollCtrl = ScrollController();
   final _service = CommunityChatService.instance;
@@ -329,7 +380,7 @@ class _CompactChatViewState extends State<_CompactChatView> {
   Map<String, CommunityProfile> _profiles = {};
   List<CommunityFriendship> _friendships = [];
   final Map<String, Future<String>> _attachmentUrls = {};
-  AiImageAttachment? _pendingCommunityImage;
+  CommunityPendingAttachment? _pendingCommunityAttachment;
   bool _loading = true;
   bool _sending = false;
   String? _error;
@@ -337,11 +388,28 @@ class _CompactChatViewState extends State<_CompactChatView> {
   @override
   void initState() {
     super.initState();
+    unawaited(CommunityUnreadService.instance.initialize());
+    CommunityUnreadService.instance.setChatVisible(
+      _visibilityToken,
+      widget.isVisible,
+    );
     _initialize();
   }
 
   @override
+  void didUpdateWidget(covariant _CompactChatView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.isVisible != widget.isVisible) {
+      CommunityUnreadService.instance.setChatVisible(
+        _visibilityToken,
+        widget.isVisible,
+      );
+    }
+  }
+
+  @override
   void dispose() {
+    CommunityUnreadService.instance.setChatVisible(_visibilityToken, false);
     _profilesSubscription?.cancel();
     _friendshipsSubscription?.cancel();
     _messagesSubscription?.cancel();
@@ -422,32 +490,33 @@ class _CompactChatViewState extends State<_CompactChatView> {
   Future<void> _send() async {
     final text = _ctrl.text.trim();
     final room = _selectedRoom;
-    final pendingImage = _pendingCommunityImage;
-    if ((text.isEmpty && pendingImage == null) || room == null || _sending) {
+    final pendingAttachment = _pendingCommunityAttachment;
+    if ((text.isEmpty && pendingAttachment == null) ||
+        room == null ||
+        _sending) {
       return;
     }
 
     setState(() => _sending = true);
-    CommunityUpload? uploadedImage;
+    CommunityUpload? uploadedAttachment;
     try {
-      if (pendingImage != null) {
-        uploadedImage = await _service.uploadImage(
+      if (pendingAttachment != null) {
+        uploadedAttachment = await _service.uploadAttachment(
           roomId: room.id,
-          bytes: pendingImage.bytes,
-          mimeType: pendingImage.mimeType,
+          attachment: pendingAttachment,
         );
       }
       await _service.sendMessage(
         roomId: room.id,
         body: text,
-        attachment: uploadedImage,
+        attachment: uploadedAttachment,
       );
       _ctrl.clear();
-      if (mounted) setState(() => _pendingCommunityImage = null);
+      if (mounted) setState(() => _pendingCommunityAttachment = null);
     } catch (error) {
-      if (uploadedImage != null) {
+      if (uploadedAttachment != null) {
         try {
-          await _service.deleteUpload(uploadedImage.path);
+          await _service.deleteUpload(uploadedAttachment.path);
         } catch (_) {
           // The unused upload can also be removed later from Supabase Storage.
         }
@@ -461,14 +530,49 @@ class _CompactChatViewState extends State<_CompactChatView> {
     }
   }
 
-  Future<void> _pickCommunityImage() async {
+  Future<void> _pickCommunityFile() async {
     try {
-      final image = await ClipboardImageService.pickImage();
-      if (image != null) _attachCommunityImage(image);
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const [
+          'png',
+          'jpg',
+          'jpeg',
+          'webp',
+          'gif',
+          'pdf',
+          'txt',
+          'md',
+          'csv',
+          'doc',
+          'docx',
+          'xls',
+          'xlsx',
+          'ppt',
+          'pptx',
+          'zip',
+        ],
+        allowMultiple: false,
+        withData: true,
+      );
+      if (result == null || result.files.isEmpty) return;
+
+      final file = result.files.single;
+      final bytes = file.bytes;
+      if (bytes == null || bytes.isEmpty) {
+        throw StateError('The selected file could not be read.');
+      }
+      _attachCommunityFile(
+        CommunityPendingAttachment(
+          bytes: bytes,
+          name: file.name,
+          mimeType: _communityMimeType(file.extension),
+        ),
+      );
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Unable to attach image: $error')),
+        SnackBar(content: Text('Unable to attach file: $error')),
       );
     }
   }
@@ -501,15 +605,54 @@ class _CompactChatViewState extends State<_CompactChatView> {
   }
 
   void _attachCommunityImage(AiImageAttachment image) {
+    final extension = switch (image.mimeType) {
+      'image/jpeg' => 'jpg',
+      'image/webp' => 'webp',
+      'image/gif' => 'gif',
+      _ => 'png',
+    };
+    _attachCommunityFile(
+      CommunityPendingAttachment(
+        bytes: image.bytes,
+        name: 'pasted-image.$extension',
+        mimeType: image.mimeType,
+      ),
+    );
+  }
+
+  void _attachCommunityFile(CommunityPendingAttachment attachment) {
     if (!mounted) return;
-    if (image.bytes.length > ClipboardImageService.maxImageBytes) {
+    if (attachment.bytes.length > CommunityChatService.maxAttachmentBytes) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please use an image smaller than 6 MB.')),
+        const SnackBar(content: Text('Please use a file smaller than 10 MB.')),
       );
       return;
     }
-    setState(() => _pendingCommunityImage = image);
+    setState(() => _pendingCommunityAttachment = attachment);
   }
+
+  String _communityMimeType(String? extension) =>
+      switch (extension?.toLowerCase()) {
+        'png' => 'image/png',
+        'jpg' || 'jpeg' => 'image/jpeg',
+        'webp' => 'image/webp',
+        'gif' => 'image/gif',
+        'pdf' => 'application/pdf',
+        'txt' => 'text/plain',
+        'md' => 'text/markdown',
+        'csv' => 'text/csv',
+        'doc' => 'application/msword',
+        'docx' =>
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'xls' => 'application/vnd.ms-excel',
+        'xlsx' =>
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'ppt' => 'application/vnd.ms-powerpoint',
+        'pptx' =>
+          'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'zip' => 'application/zip',
+        _ => 'application/octet-stream',
+      };
 
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1163,27 +1306,6 @@ class _CompactChatViewState extends State<_CompactChatView> {
                             color: Colors.redAccent,
                           ),
                         ),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const Text(
-                            'Live',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Color(0xFF10A37F),
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                          Text(
-                            _identity?.displayName ?? '',
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: Colors.grey.shade500,
-                            ),
-                          ),
-                        ],
-                      ),
                     ],
                   ),
                 ),
@@ -1213,17 +1335,50 @@ class _CompactChatViewState extends State<_CompactChatView> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      if (_pendingCommunityImage != null) ...[
+                      if (_pendingCommunityAttachment != null) ...[
                         Align(
                           alignment: Alignment.centerLeft,
                           child: Stack(
                             children: [
-                              ExpandableImage.memory(
-                                _pendingCommunityImage!.bytes,
-                                width: 112,
-                                height: 80,
-                                borderRadius: 10,
-                              ),
+                              if (_pendingCommunityAttachment!.isImage)
+                                ExpandableImage.memory(
+                                  _pendingCommunityAttachment!.bytes,
+                                  width: 112,
+                                  height: 80,
+                                  borderRadius: 10,
+                                )
+                              else
+                                Container(
+                                  width: 280,
+                                  padding: const EdgeInsets.fromLTRB(
+                                    12,
+                                    12,
+                                    34,
+                                    12,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: isDark
+                                        ? const Color(0xFF1F2937)
+                                        : Colors.grey.shade100,
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        Icons.insert_drive_file_outlined,
+                                        color: roomColor,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          _pendingCommunityAttachment!.name,
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
                               Positioned(
                                 right: 4,
                                 top: 4,
@@ -1231,7 +1386,8 @@ class _CompactChatViewState extends State<_CompactChatView> {
                                   onTap: _sending
                                       ? null
                                       : () => setState(
-                                            () => _pendingCommunityImage = null,
+                                            () => _pendingCommunityAttachment =
+                                                null,
                                           ),
                                   child: Container(
                                     padding: const EdgeInsets.all(3),
@@ -1255,10 +1411,10 @@ class _CompactChatViewState extends State<_CompactChatView> {
                       Row(
                         children: [
                           IconButton(
-                            tooltip: 'Attach community image',
-                            onPressed: _sending ? null : _pickCommunityImage,
+                            tooltip: 'Attach file or image',
+                            onPressed: _sending ? null : _pickCommunityFile,
                             icon: const Icon(
-                              Icons.add_photo_alternate_outlined,
+                              Icons.attach_file,
                               color: roomColor,
                             ),
                           ),
@@ -1331,7 +1487,7 @@ class _CompactChatViewState extends State<_CompactChatView> {
                           ),
                         ],
                       ),
-                      if (_sending && _pendingCommunityImage != null) ...[
+                      if (_sending && _pendingCommunityAttachment != null) ...[
                         const SizedBox(height: 6),
                         const Row(
                           children: [
@@ -1344,7 +1500,7 @@ class _CompactChatViewState extends State<_CompactChatView> {
                             ),
                             SizedBox(width: 8),
                             Text(
-                              'Uploading image...',
+                              'Uploading attachment...',
                               style: TextStyle(fontSize: 11),
                             ),
                           ],
@@ -1365,7 +1521,7 @@ class _CompactChatViewState extends State<_CompactChatView> {
     final isMe = message.senderId == _identity?.userId;
     final sender = _displayName(message.senderId);
     final color = _userColor(message.senderId);
-    final time = TimeOfDay.fromDateTime(message.createdAt).format(context);
+    final dateAndTime = _messageDateAndTime(message.createdAt);
 
     if (isMe) {
       return Align(
@@ -1390,7 +1546,7 @@ class _CompactChatViewState extends State<_CompactChatView> {
               ),
               const SizedBox(height: 4),
               Text(
-                time,
+                dateAndTime,
                 style: const TextStyle(color: Colors.white70, fontSize: 10),
               ),
             ],
@@ -1443,7 +1599,7 @@ class _CompactChatViewState extends State<_CompactChatView> {
                 Text(message.body),
                 const SizedBox(height: 4),
                 Text(
-                  time,
+                  dateAndTime,
                   style: TextStyle(fontSize: 10, color: Colors.grey.shade500),
                 ),
               ],
@@ -1454,10 +1610,40 @@ class _CompactChatViewState extends State<_CompactChatView> {
     );
   }
 
+  String _messageDateAndTime(DateTime dateTime) {
+    const weekdays = [
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+      'Sunday',
+    ];
+    const months = [
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December',
+    ];
+    final time = TimeOfDay.fromDateTime(dateTime).format(context);
+    return '${weekdays[dateTime.weekday - 1]}, '
+        '${dateTime.day} ${months[dateTime.month - 1]} ${dateTime.year} • $time';
+  }
+
   Widget _communityAttachment(
     CommunityMessage message, {
     required bool isMe,
   }) {
+    final isImage = message.attachmentIsImage;
     final path = message.attachmentPath!;
     final url = _attachmentUrls.putIfAbsent(
       path,
@@ -1479,13 +1665,15 @@ class _CompactChatViewState extends State<_CompactChatView> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(
-                  Icons.broken_image_outlined,
+                  isImage
+                      ? Icons.broken_image_outlined
+                      : Icons.insert_drive_file_outlined,
                   color: isMe ? Colors.white70 : Colors.grey.shade600,
                 ),
                 const SizedBox(width: 8),
                 Flexible(
                   child: Text(
-                    'Image could not be loaded',
+                    '${isImage ? 'Image' : 'File'} could not be loaded',
                     style: TextStyle(
                       color: isMe ? Colors.white70 : Colors.grey.shade700,
                       fontSize: 12,
@@ -1499,7 +1687,7 @@ class _CompactChatViewState extends State<_CompactChatView> {
         if (!snapshot.hasData) {
           return Container(
             width: 230,
-            height: 150,
+            height: isImage ? 150 : 64,
             alignment: Alignment.center,
             decoration: BoxDecoration(
               color: isMe ? Colors.white12 : Colors.grey.shade100,
@@ -1512,14 +1700,70 @@ class _CompactChatViewState extends State<_CompactChatView> {
           );
         }
 
-        return ExpandableImage.network(
-          snapshot.data!,
-          width: 280,
-          height: 190,
-          borderRadius: 10,
+        if (isImage) {
+          return ExpandableImage.network(
+            snapshot.data!,
+            width: 280,
+            height: 190,
+            borderRadius: 10,
+          );
+        }
+
+        return InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: () => unawaited(_openCommunityAttachment(snapshot.data!)),
+          child: Container(
+            width: 280,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: isMe ? Colors.white12 : Colors.grey.shade100,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.insert_drive_file_outlined,
+                  color: isMe ? Colors.white : const Color(0xFF10A37F),
+                ),
+                const SizedBox(width: 9),
+                Expanded(
+                  child: Text(
+                    message.attachmentName ?? 'Shared file',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: isMe ? Colors.white : null,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Icon(
+                  Icons.open_in_new,
+                  size: 18,
+                  color: isMe ? Colors.white70 : Colors.grey.shade600,
+                ),
+              ],
+            ),
+          ),
         );
       },
     );
+  }
+
+  Future<void> _openCommunityAttachment(String url) async {
+    try {
+      final opened = await launchUrl(
+        Uri.parse(url),
+        mode: LaunchMode.externalApplication,
+      );
+      if (!opened) throw StateError('No application could open this file.');
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unable to open file: $error')),
+      );
+    }
   }
 }
 

@@ -100,6 +100,7 @@ class ToolbarWidget extends StatelessWidget {
                   Icons.format_paint, 'Highlight', DrawingTool.highlighter),
               _toolBtn(
                   Icons.auto_fix_normal_outlined, 'Eraser', DrawingTool.eraser),
+              _toolBtn(Icons.comment_outlined, 'Comment', DrawingTool.text),
               _sep(),
               _selectionDropdown(),
               _sep(),
@@ -446,7 +447,9 @@ class ToolbarWidget extends StatelessWidget {
     final isSel = selectedColor == c;
     return GestureDetector(
       onTap: () {
-        if (selectedTool == DrawingTool.eraser) onToolChanged(DrawingTool.pen);
+        if (selectedTool == DrawingTool.eraser) {
+          onToolChanged(DrawingTool.pen);
+        }
         onColorChanged(c);
       },
       child: AnimatedContainer(

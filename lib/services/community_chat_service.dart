@@ -134,6 +134,23 @@ class CommunityMessage {
 
   bool get hasAttachment =>
       attachmentPath != null && attachmentPath!.trim().isNotEmpty;
+
+  bool get attachmentIsImage =>
+      attachmentMimeType?.toLowerCase().startsWith('image/') == true;
+}
+
+class CommunityPendingAttachment {
+  final Uint8List bytes;
+  final String name;
+  final String mimeType;
+
+  const CommunityPendingAttachment({
+    required this.bytes,
+    required this.name,
+    required this.mimeType,
+  });
+
+  bool get isImage => mimeType.toLowerCase().startsWith('image/');
 }
 
 class CommunityUpload {
@@ -153,6 +170,7 @@ class CommunityChatService {
 
   static final CommunityChatService instance = CommunityChatService._();
   static const String uploadsBucket = 'community-uploads';
+  static const int maxAttachmentBytes = 10 * 1024 * 1024;
 
   SupabaseClient get _client => Supabase.instance.client;
   Future<CommunityIdentity>? _initializing;
@@ -416,6 +434,17 @@ class CommunityChatService {
         });
   }
 
+  /// Watches recent messages from every room this user is permitted to see.
+  /// This stream is used for unread badges and message notifications.
+  Stream<List<CommunityMessage>> watchRecentMessages() {
+    return _client
+        .from('community_messages')
+        .stream(primaryKey: ['id'])
+        .order('created_at', ascending: false)
+        .limit(200)
+        .map((rows) => rows.map(CommunityMessage.fromJson).toList());
+  }
+
   Future<void> sendMessage({
     required String roomId,
     required String body,
@@ -423,7 +452,7 @@ class CommunityChatService {
   }) async {
     var text = body.trim();
     if (text.isEmpty && attachment == null) return;
-    if (text.isEmpty) text = 'Shared an image.';
+    if (text.isEmpty) text = 'Shared ${attachment!.name}.';
 
     await ensureSignedIn();
     await _client.from('community_messages').insert({
@@ -437,32 +466,39 @@ class CommunityChatService {
     });
   }
 
-  Future<CommunityUpload> uploadImage({
+  Future<CommunityUpload> uploadAttachment({
     required String roomId,
-    required Uint8List bytes,
-    required String mimeType,
+    required CommunityPendingAttachment attachment,
   }) async {
     final identity = await ensureSignedIn();
-    final extension = switch (mimeType) {
-      'image/jpeg' => 'jpg',
-      'image/webp' => 'webp',
-      'image/gif' => 'gif',
-      _ => 'png',
-    };
+    if (attachment.bytes.isEmpty) {
+      throw ArgumentError('The selected file is empty.');
+    }
+    if (attachment.bytes.length > maxAttachmentBytes) {
+      throw ArgumentError('Please use a file smaller than 10 MB.');
+    }
+
     final stamp = DateTime.now().microsecondsSinceEpoch;
-    final name = 'community-image-$stamp.$extension';
-    final path = '${identity.userId}/$roomId/$name';
+    final safeName = attachment.name
+        .replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_')
+        .replaceAll(RegExp(r'_+'), '_');
+    final storageName = '$stamp-${safeName.isEmpty ? 'attachment' : safeName}';
+    final path = '${identity.userId}/$roomId/$storageName';
 
     await _client.storage.from(uploadsBucket).uploadBinary(
           path,
-          bytes,
+          attachment.bytes,
           fileOptions: FileOptions(
-            contentType: mimeType,
+            contentType: attachment.mimeType,
             upsert: false,
           ),
         );
 
-    return CommunityUpload(path: path, name: name, mimeType: mimeType);
+    return CommunityUpload(
+      path: path,
+      name: attachment.name,
+      mimeType: attachment.mimeType,
+    );
   }
 
   Future<String> createAttachmentUrl(String path) {

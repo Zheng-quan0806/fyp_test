@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'ai_chat_store.dart';
+
 class GoogleAuthUser {
   final String displayName;
   final String email;
@@ -19,8 +21,6 @@ class GoogleAuthService {
   GoogleAuthService._();
 
   static final GoogleAuthService instance = GoogleAuthService._();
-
-  static const String callbackUrl = 'notebooktutor://login-callback/';
 
   final ValueNotifier<GoogleAuthUser?> currentUser =
       ValueNotifier<GoogleAuthUser?>(null);
@@ -46,7 +46,6 @@ class GoogleAuthService {
     await initialize();
     final opened = await _client.auth.signInWithOAuth(
       OAuthProvider.google,
-      redirectTo: kIsWeb ? null : callbackUrl,
       authScreenLaunchMode:
           kIsWeb ? LaunchMode.platformDefault : LaunchMode.externalApplication,
     );
@@ -56,6 +55,7 @@ class GoogleAuthService {
   }
 
   Future<void> signOut() async {
+    await AiChatStore.instance.flushCloudWrites();
     await _client.auth.signOut();
     currentUser.value = null;
   }

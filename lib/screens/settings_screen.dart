@@ -68,7 +68,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             valueListenable: _auth.currentUser,
             builder: (context, user, _) => _accountSection(user),
           ),
-          _section('Appearance', [
+          _section('Theme', [
             SwitchListTile(
               secondary: const Icon(
                 Icons.dark_mode_outlined,
@@ -98,7 +98,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ]),
           _section('About', [
             _info('Version', '1.0.0'),
-            _info('Developer', 'FYP Project — UTAR'),
           ]),
         ],
       ),

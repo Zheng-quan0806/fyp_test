@@ -105,10 +105,20 @@ class _CalendarScreenState extends State<CalendarScreen> {
       final eventDay = DateTime(task.date.year, task.date.month, task.date.day);
       final reminderWasLate =
           !reminderTime.isAfter(now) && eventDay.isAfter(today);
+      final taskStart = _reminders.taskStartDateFor(task);
+      final tenMinuteReminder = _reminders.tenMinuteReminderDateFor(task);
+      final tenMinuteReminderWasLate = taskStart?.isAfter(now) == true &&
+          tenMinuteReminder?.isAfter(now) == false;
       final message = reminderSet
-          ? reminderWasLate
-              ? 'The 8:00 AM reminder had passed, so it was shown now.'
-              : 'Reminder set for ${_fullDate(reminderTime)} at 8:00 AM.'
+          ? tenMinuteReminderWasLate
+              ? 'The 10-minute reminder had passed, so it was shown now.'
+              : tenMinuteReminder?.isAfter(now) == true
+                  ? 'Reminder set for ${_fullDate(tenMinuteReminder!)} at '
+                      '${_formatMinutes(tenMinuteReminder.hour * 60 + tenMinuteReminder.minute)} '
+                      '(10 minutes before the task).'
+                  : reminderWasLate
+                      ? 'The 8:00 AM reminder had passed, so it was shown now.'
+                      : 'Reminder set for ${_fullDate(reminderTime)} at 8:00 AM.'
           : reminderTime.isAfter(DateTime.now())
               ? 'Task saved. Allow notifications to receive its reminder.'
               : 'Task saved. Its reminder time has already passed.';
@@ -182,6 +192,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         final picked = await showTimePicker(
                           context: dialogContext,
                           initialTime: time,
+                          initialEntryMode: TimePickerEntryMode.inputOnly,
                         );
                         if (picked != null) updateDialog(() => time = picked);
                       },
@@ -197,13 +208,18 @@ class _CalendarScreenState extends State<CalendarScreen> {
                           .withValues(alpha: 0.45),
                       borderRadius: BorderRadius.circular(10),
                     ),
-                    child: const Row(
+                    child: Row(
                       children: [
-                        Icon(Icons.notifications_active_outlined, size: 20),
-                        SizedBox(width: 10),
+                        const Icon(
+                          Icons.notifications_active_outlined,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 10),
                         Expanded(
                           child: Text(
-                            'Reminder: one day before at 8:00 AM',
+                            allDay
+                                ? 'Reminder: one day before at 8:00 AM'
+                                : 'Reminders: one day before at 8:00 AM and 10 minutes before the task',
                           ),
                         ),
                       ],

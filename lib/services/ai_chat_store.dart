@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -41,7 +40,8 @@ class AiChatStore extends ChangeNotifier {
   AiChatStore._();
 
   static final AiChatStore instance = AiChatStore._();
-  static const _storageKey = 'ai_chat_store_v1';
+  static const _legacyStorageKey = 'ai_chat_store_v1';
+  static const _oldStorageKeyPrefix = 'ai_chat_store_v2';
   static const _uploadsBucket = 'gpt-uploads';
 
   final List<AiChatThread> threads = [];
@@ -51,78 +51,89 @@ class AiChatStore extends ChangeNotifier {
   String _draft = '';
   bool _initialized = false;
   Future<void> _saveQueue = Future<void>.value();
+  Future<void> _authSwitchQueue = Future<void>.value();
+  Future<void> _cloudSyncQueue = Future<void>.value();
   StreamSubscription<AuthState>? _authSubscription;
-  String? _loadedCloudUserId;
-  bool _cloudLoadInProgress = false;
+  String? _activeUserId;
+  int _accountGeneration = 0;
 
   Future<void> initialize() async {
     if (_initialized) return;
     _initialized = true;
 
-    await _restoreLocal();
+    await _removeOldLocalHistory();
+    _activeUserId = _cloudUser?.id;
 
     _authSubscription = Supabase.instance.client.auth.onAuthStateChange.listen(
       (state) {
-        final user = state.session?.user;
-        if (user == null || user.isAnonymous) {
-          _loadedCloudUserId = null;
-          return;
-        }
-        if (_loadedCloudUserId != user.id) {
-          unawaited(syncFromCloud());
-        }
+        _authSwitchQueue = _authSwitchQueue
+            .then((_) => _switchAccount(state.session?.user))
+            .catchError((Object error) {
+          debugPrint('Could not switch GPT chat account: $error');
+        });
       },
     );
 
     await syncFromCloud();
   }
 
-  Future<void> _restoreLocal() async {
-    try {
-      final preferences = await SharedPreferences.getInstance();
-      final raw = preferences.getString(_storageKey);
-      if (raw == null || raw.isEmpty) return;
+  String? _accountId(User? user) =>
+      user == null || user.isAnonymous ? null : user.id;
 
-      final decoded = jsonDecode(raw);
-      if (decoded is! Map) return;
+  Future<void> _removeOldLocalHistory() async {
+    final preferences = await SharedPreferences.getInstance();
+    final oldKeys = preferences.getKeys().where(
+          (key) =>
+              key == _legacyStorageKey || key.startsWith(_oldStorageKeyPrefix),
+        );
+    for (final key in oldKeys.toList()) {
+      await preferences.remove(key);
+    }
+  }
 
-      final restoredThreads = decoded['threads'];
-      if (restoredThreads is List) {
-        threads
-          ..clear()
-          ..addAll(
-            restoredThreads
-                .whereType<Map>()
-                .map(_threadFromJson)
-                .whereType<AiChatThread>(),
-          );
-      }
+  Future<void> _switchAccount(User? user) async {
+    final nextUserId = _accountId(user);
+    if (nextUserId == _activeUserId) return;
 
-      final restoredSelection = decoded['selectedThreadId'];
-      if (restoredSelection is String &&
-          threads.any((thread) => thread.id == restoredSelection)) {
-        _selectedThreadId = restoredSelection;
-      } else if (threads.isNotEmpty) {
-        _selectedThreadId = threads.first.id;
-      }
+    // Finish writes for the previous account before replacing the in-memory
+    // conversation list. Cloud writes also verify the current Supabase user.
+    await _saveQueue;
 
-      threads.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-    } catch (error) {
-      debugPrint('Could not restore GPT chats: $error');
-      threads.clear();
-      _selectedThreadId = null;
+    _activeUserId = nextUserId;
+    _accountGeneration++;
+    _thinking = false;
+    _pendingImage = null;
+    _draft = '';
+    threads.clear();
+    _selectedThreadId = null;
+    notifyListeners();
+
+    if (nextUserId != null) {
+      await syncFromCloud();
     }
   }
 
   Future<void> syncFromCloud() async {
     final user = _cloudUser;
-    if (user == null || _cloudLoadInProgress) return;
+    if (user == null || user.id != _activeUserId) return;
 
-    _cloudLoadInProgress = true;
+    final userId = user.id;
+    _cloudSyncQueue = _cloudSyncQueue.then(
+      (_) => _syncFromCloudFor(userId),
+    );
+    await _cloudSyncQueue;
+  }
+
+  Future<void> _syncFromCloudFor(String userId) async {
+    if (_activeUserId != userId || _cloudUser?.id != userId) return;
+
     try {
-      final cloudThreads = await _loadCloudThreads(user.id);
-      _mergeCloudThreads(cloudThreads);
-      _loadedCloudUserId = user.id;
+      final cloudThreads = await _loadCloudThreads(userId);
+      if (_activeUserId != userId || _cloudUser?.id != userId) return;
+
+      threads
+        ..clear()
+        ..addAll(cloudThreads);
 
       if (_selectedThreadId == null && threads.isNotEmpty) {
         _selectedThreadId = threads.first.id;
@@ -130,12 +141,9 @@ class AiChatStore extends ChangeNotifier {
       threads.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
       notifyListeners();
 
-      await _saveLocal();
-      await _saveToCloud();
+      await _saveToCloud(userId);
     } catch (error) {
       debugPrint('Could not synchronize GPT chats with Supabase: $error');
-    } finally {
-      _cloudLoadInProgress = false;
     }
   }
 
@@ -194,7 +202,7 @@ class AiChatStore extends ChangeNotifier {
     await _saveQueue;
 
     final user = _cloudUser;
-    if (user != null) {
+    if (user != null && user.id == _activeUserId) {
       final client = Supabase.instance.client;
       await client
           .from('gpt_chat_threads')
@@ -226,7 +234,6 @@ class AiChatStore extends ChangeNotifier {
       _draft = '';
     }
     notifyListeners();
-    await _saveLocal();
   }
 
   void updateDraft(String value) {
@@ -253,6 +260,7 @@ class AiChatStore extends ChangeNotifier {
     if ((text.isEmpty && image == null) || thread == null || _thinking) return;
 
     final prompt = text.isEmpty ? 'Please explain this image.' : text;
+    final accountGeneration = _accountGeneration;
     final now = DateTime.now();
     thread.messages.add(
       AiChatMessage(
@@ -288,6 +296,9 @@ class AiChatStore extends ChangeNotifier {
       replyText = 'Sorry, ${error.message}';
     }
 
+    // Do not place a reply from an old session into a newly selected account.
+    if (accountGeneration != _accountGeneration) return;
+
     final replyTime = DateTime.now();
     thread.messages.add(
       AiChatMessage(
@@ -306,28 +317,26 @@ class AiChatStore extends ChangeNotifier {
 
   void _queueSave({bool syncCloud = true}) {
     if (!_initialized) return;
+    final targetUserId = _activeUserId;
+    if (!syncCloud || targetUserId == null) return;
+
     _saveQueue = _saveQueue.then((_) async {
-      await _saveLocal();
-      if (syncCloud) await _saveToCloud();
+      if (targetUserId != _activeUserId) return;
+      await _saveToCloud(targetUserId);
     }).catchError((Object error) {
       debugPrint('Could not save GPT chats: $error');
     });
   }
 
-  Future<void> _saveLocal() async {
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.setString(
-      _storageKey,
-      jsonEncode({
-        'selectedThreadId': _selectedThreadId,
-        'threads': threads.map(_threadToJson).toList(),
-      }),
-    );
-  }
+  Future<void> flushCloudWrites() => _saveQueue;
 
-  Future<void> _saveToCloud() async {
-    final user = _cloudUser;
-    if (user == null || threads.isEmpty) return;
+  Future<void> _saveToCloud(String userId) async {
+    final currentUser = _cloudUser;
+    if (currentUser?.id != userId ||
+        _activeUserId != userId ||
+        threads.isEmpty) {
+      return;
+    }
 
     final client = Supabase.instance.client;
     final threadRows = <Map<String, Object?>>[];
@@ -336,7 +345,7 @@ class AiChatStore extends ChangeNotifier {
     for (final thread in threads) {
       threadRows.add({
         'id': thread.id,
-        'user_id': user.id,
+        'user_id': userId,
         'title': thread.title,
         'updated_at': thread.updatedAt.toUtc().toIso8601String(),
       });
@@ -345,7 +354,7 @@ class AiChatStore extends ChangeNotifier {
         final image = message.image;
         if (image != null && image.storagePath == null) {
           final extension = _extensionForMimeType(image.mimeType);
-          final path = '${user.id}/${thread.id}/${message.id}.$extension';
+          final path = '$userId/${thread.id}/${message.id}.$extension';
           await client.storage.from(_uploadsBucket).uploadBinary(
                 path,
                 image.bytes,
@@ -360,7 +369,7 @@ class AiChatStore extends ChangeNotifier {
         messageRows.add({
           'id': message.id,
           'thread_id': thread.id,
-          'user_id': user.id,
+          'user_id': userId,
           'content': message.text,
           'is_user': message.isUser,
           'created_at': message.time.toUtc().toIso8601String(),
@@ -374,9 +383,6 @@ class AiChatStore extends ChangeNotifier {
     if (messageRows.isNotEmpty) {
       await client.from('gpt_chat_messages').upsert(messageRows);
     }
-
-    // Persist any Storage paths that were assigned during this upload.
-    await _saveLocal();
   }
 
   Future<List<AiChatThread>> _loadCloudThreads(String userId) async {
@@ -393,7 +399,7 @@ class AiChatStore extends ChangeNotifier {
           'image_path, image_mime_type',
         )
         .eq('user_id', userId)
-        .order('created_at');
+        .order('created_at', ascending: true);
 
     final messagesByThread = <String, List<AiChatMessage>>{};
     for (final row in rawMessages) {
@@ -450,125 +456,12 @@ class AiChatStore extends ChangeNotifier {
     }).toList();
   }
 
-  void _mergeCloudThreads(List<AiChatThread> cloudThreads) {
-    for (final cloudThread in cloudThreads) {
-      AiChatThread? localThread;
-      for (final thread in threads) {
-        if (thread.id == cloudThread.id) {
-          localThread = thread;
-          break;
-        }
-      }
-
-      if (localThread == null) {
-        threads.add(cloudThread);
-        continue;
-      }
-
-      final messagesById = <String, AiChatMessage>{
-        for (final message in localThread.messages) message.id: message,
-      };
-      for (final cloudMessage in cloudThread.messages) {
-        final localMessage = messagesById[cloudMessage.id];
-        if (localMessage == null ||
-            (localMessage.image?.storagePath == null &&
-                cloudMessage.image?.storagePath != null)) {
-          messagesById[cloudMessage.id] = cloudMessage;
-        }
-      }
-      localThread.messages
-        ..clear()
-        ..addAll(messagesById.values)
-        ..sort((a, b) => a.time.compareTo(b.time));
-
-      if (cloudThread.updatedAt.isAfter(localThread.updatedAt)) {
-        localThread.title = cloudThread.title;
-        localThread.updatedAt = cloudThread.updatedAt;
-      }
-    }
-  }
-
   String _extensionForMimeType(String mimeType) => switch (mimeType) {
         'image/jpeg' => 'jpg',
         'image/webp' => 'webp',
         'image/gif' => 'gif',
         _ => 'png',
       };
-
-  Map<String, Object?> _threadToJson(AiChatThread thread) => {
-        'id': thread.id,
-        'title': thread.title,
-        'updatedAt': thread.updatedAt.toIso8601String(),
-        'messages': thread.messages.map(_messageToJson).toList(),
-      };
-
-  Map<String, Object?> _messageToJson(AiChatMessage message) => {
-        'id': message.id,
-        'text': message.text,
-        'isUser': message.isUser,
-        'time': message.time.toIso8601String(),
-        if (message.image != null) 'image': message.image!.toJson(),
-      };
-
-  AiChatThread? _threadFromJson(Map<dynamic, dynamic> json) {
-    final id = json['id'];
-    final title = json['title'];
-    final updatedAt = DateTime.tryParse(json['updatedAt']?.toString() ?? '');
-    final rawMessages = json['messages'];
-    if (id is! String || title is! String || updatedAt == null) return null;
-
-    final messages = rawMessages is List
-        ? rawMessages
-            .whereType<Map>()
-            .map(_messageFromJson)
-            .whereType<AiChatMessage>()
-            .toList()
-        : <AiChatMessage>[];
-
-    return AiChatThread(
-      id: id,
-      title: title,
-      messages: messages,
-      updatedAt: updatedAt,
-    );
-  }
-
-  AiChatMessage? _messageFromJson(Map<dynamic, dynamic> json) {
-    final id = json['id'];
-    final text = json['text'];
-    final isUser = json['isUser'];
-    final time = DateTime.tryParse(json['time']?.toString() ?? '');
-    if (id is! String || text is! String || isUser is! bool || time == null) {
-      return null;
-    }
-
-    AiImageAttachment? image;
-    final rawImage = json['image'];
-    if (rawImage is Map) {
-      final mimeType = rawImage['mimeType'];
-      final data = rawImage['data'];
-      final storagePath = rawImage['storagePath'];
-      if (mimeType is String && data is String) {
-        try {
-          image = AiImageAttachment(
-            bytes: base64Decode(data),
-            mimeType: mimeType,
-            storagePath: storagePath is String ? storagePath : null,
-          );
-        } on FormatException {
-          image = null;
-        }
-      }
-    }
-
-    return AiChatMessage(
-      id: id,
-      text: text,
-      isUser: isUser,
-      time: time,
-      image: image,
-    );
-  }
 
   String _titleFromPrompt(String text) {
     final words = text

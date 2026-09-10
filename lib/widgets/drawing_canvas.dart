@@ -11,6 +11,7 @@ enum DrawingTool {
   pen,
   highlighter,
   eraser,
+  text,
   line,
   rectangle,
   circle,
@@ -48,7 +49,8 @@ class DrawingCanvas extends StatefulWidget {
 
 class DrawingCanvasState extends State<DrawingCanvas> {
   late List<DrawnPoint> _strokes;
-  final List<List<DrawnPoint>> _history = [];
+  late List<NoteTextBox> _textBoxes;
+  final List<_CanvasSnapshot> _history = [];
 
   Offset? _shapeStart;
   Offset? _shapeCurrent;
@@ -56,6 +58,7 @@ class DrawingCanvasState extends State<DrawingCanvas> {
 
   final GlobalKey _repaintKey = GlobalKey();
   final Set<int> _selectedPointIndices = <int>{};
+  final Set<String> _selectedTextIds = <String>{};
   List<Offset> _selectionPath = <Offset>[];
   Rect? _selectionBounds;
   Offset? _selectionStart;
@@ -63,6 +66,11 @@ class DrawingCanvasState extends State<DrawingCanvas> {
   Offset? _lastMovePosition;
   bool _movingSelection = false;
   bool _copyingSelection = false;
+  int? _draggedTextIndex;
+  Offset? _lastTextDragPosition;
+  String? _editingTextId;
+  TextEditingController? _textController;
+  FocusNode? _textFocusNode;
 
   ui.Image? _bgImage;
   String? _loadedBgKey;
@@ -71,6 +79,7 @@ class DrawingCanvasState extends State<DrawingCanvas> {
   void initState() {
     super.initState();
     _strokes = List.from(widget.page.strokes);
+    _textBoxes = widget.page.textBoxes.map((text) => text.copy()).toList();
     _loadBackground();
   }
 
@@ -78,12 +87,15 @@ class DrawingCanvasState extends State<DrawingCanvas> {
   void didUpdateWidget(DrawingCanvas old) {
     super.didUpdateWidget(old);
     if (widget.page.id != old.page.id) {
+      _closeTextEditor(removeEmpty: true);
       setState(() {
         _strokes = List.from(widget.page.strokes);
+        _textBoxes = widget.page.textBoxes.map((text) => text.copy()).toList();
         _history.clear();
         _shapeStart = null;
         _shapeCurrent = null;
         _selectedPointIndices.clear();
+        _selectedTextIds.clear();
         _selectionPath = <Offset>[];
         _selectionBounds = null;
         _selectionStart = null;
@@ -93,9 +105,20 @@ class DrawingCanvasState extends State<DrawingCanvas> {
       });
       _loadBackground();
     }
+    if (old.tool == DrawingTool.text && widget.tool != DrawingTool.text) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _finishInlineText();
+      });
+    }
     if (widget.page.strokes.isEmpty && _strokes.isNotEmpty) {
       setState(() {
         _strokes = [];
+        _history.clear();
+      });
+    }
+    if (widget.page.textBoxes.isEmpty && _textBoxes.isNotEmpty) {
+      setState(() {
+        _textBoxes = [];
         _history.clear();
       });
     }
@@ -103,6 +126,7 @@ class DrawingCanvasState extends State<DrawingCanvas> {
         (_isSelectionToolValue(old.tool) ||
             _isSelectionToolValue(widget.tool))) {
       _selectedPointIndices.clear();
+      _selectedTextIds.clear();
       _selectionPath = <Offset>[];
       _selectionBounds = null;
       _selectionStart = null;
@@ -110,6 +134,12 @@ class DrawingCanvasState extends State<DrawingCanvas> {
       _lastMovePosition = null;
       _movingSelection = false;
     }
+  }
+
+  @override
+  void dispose() {
+    _closeTextEditor(removeEmpty: true);
+    super.dispose();
   }
 
   Future<void> _loadBackground() async {
@@ -131,20 +161,28 @@ class DrawingCanvasState extends State<DrawingCanvas> {
   }
 
   void _saveHistory() {
-    _history.add(List.from(_strokes));
+    _history.add(_CanvasSnapshot(
+      strokes: List.from(_strokes),
+      textBoxes: _textBoxes.map((text) => text.copy()).toList(),
+    ));
     if (_history.length > 60) _history.removeAt(0);
   }
 
   void _notify() {
     widget.page.strokes = List.from(_strokes);
+    widget.page.textBoxes = _textBoxes.map((text) => text.copy()).toList();
     widget.onPageChanged(widget.page);
   }
 
   void undo() {
     if (_history.isEmpty) return;
+    _closeTextEditor(removeEmpty: true);
     setState(() {
-      _strokes = _history.removeLast();
+      final previous = _history.removeLast();
+      _strokes = previous.strokes;
+      _textBoxes = previous.textBoxes;
       _selectedPointIndices.clear();
+      _selectedTextIds.clear();
       _selectionPath = <Offset>[];
       _selectionBounds = null;
       _selectionStart = null;
@@ -184,6 +222,17 @@ class DrawingCanvasState extends State<DrawingCanvas> {
   double get _eraserRadius => widget.strokeWidth * 3 + 10;
 
   void _onPanStart(Offset pos) {
+    if (widget.tool == DrawingTool.text) {
+      final index = _textIndexAt(pos);
+      if (index != null) {
+        _saveHistory();
+        setState(() {
+          _draggedTextIndex = index;
+          _lastTextDragPosition = pos;
+        });
+      }
+      return;
+    }
     if (_isSelectionTool) {
       _onSelectionStart(pos);
       return;
@@ -204,6 +253,17 @@ class DrawingCanvasState extends State<DrawingCanvas> {
   }
 
   void _onPanUpdate(Offset pos) {
+    if (widget.tool == DrawingTool.text) {
+      final index = _draggedTextIndex;
+      final previous = _lastTextDragPosition;
+      if (index == null || previous == null) return;
+      final delta = pos - previous;
+      setState(() {
+        _textBoxes[index].position += delta;
+        _lastTextDragPosition = pos;
+      });
+      return;
+    }
     if (_isSelectionTool) {
       _onSelectionUpdate(pos);
       return;
@@ -219,6 +279,16 @@ class DrawingCanvasState extends State<DrawingCanvas> {
   }
 
   void _onPanEnd() {
+    if (widget.tool == DrawingTool.text) {
+      if (_draggedTextIndex != null) {
+        setState(() {
+          _draggedTextIndex = null;
+          _lastTextDragPosition = null;
+        });
+        _notify();
+      }
+      return;
+    }
     if (_isSelectionTool) {
       _onSelectionEnd();
       return;
@@ -244,7 +314,8 @@ class DrawingCanvasState extends State<DrawingCanvas> {
   }
 
   void _onSelectionStart(Offset position) {
-    if (_selectionContains(position) && _selectedPointIndices.isNotEmpty) {
+    if (_selectionContains(position) &&
+        (_selectedPointIndices.isNotEmpty || _selectedTextIds.isNotEmpty)) {
       _saveHistory();
       setState(() {
         _movingSelection = true;
@@ -255,6 +326,7 @@ class DrawingCanvasState extends State<DrawingCanvas> {
 
     setState(() {
       _selectedPointIndices.clear();
+      _selectedTextIds.clear();
       _selectionStart = position;
       _selectionCurrent = position;
       _selectionPath = <Offset>[position];
@@ -279,6 +351,9 @@ class DrawingCanvasState extends State<DrawingCanvas> {
             color: item.color,
             strokeWidth: item.strokeWidth,
           );
+        }
+        for (final text in _textBoxes) {
+          if (_selectedTextIds.contains(text.id)) text.position += delta;
         }
         _selectionPath = _selectionPath.map((point) => point + delta).toList();
         _selectionBounds = _selectionBounds?.shift(delta);
@@ -336,14 +411,15 @@ class DrawingCanvasState extends State<DrawingCanvas> {
     }
 
     _selectStrokeGroups();
+    _selectTextBoxes();
     setState(() {});
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            _selectedPointIndices.isEmpty
+            _selectedPointIndices.isEmpty && _selectedTextIds.isEmpty
                 ? 'Area selected. Long-press it to copy a screenshot.'
-                : 'Drag inside to move handwriting. Long-press to copy or delete it.',
+                : 'Drag inside to move the content. Long-press to copy or delete it.',
           ),
           duration: const Duration(seconds: 2),
           behavior: SnackBarBehavior.floating,
@@ -374,6 +450,21 @@ class DrawingCanvasState extends State<DrawingCanvas> {
       }
     }
     finishGroup();
+  }
+
+  void _selectTextBoxes() {
+    _selectedTextIds.clear();
+    for (final text in _textBoxes) {
+      final bounds = _textBounds(text);
+      final selected = <Offset>[
+        bounds.topLeft,
+        bounds.topRight,
+        bounds.bottomLeft,
+        bounds.bottomRight,
+        bounds.center,
+      ].any(_pointInsideSelection);
+      if (selected) _selectedTextIds.add(text.id);
+    }
   }
 
   bool _pointInsideSelection(Offset point) {
@@ -421,6 +512,7 @@ class DrawingCanvasState extends State<DrawingCanvas> {
     if (!mounted) return;
     setState(() {
       _selectedPointIndices.clear();
+      _selectedTextIds.clear();
       _selectionPath = <Offset>[];
       _selectionBounds = null;
       _selectionStart = null;
@@ -462,6 +554,7 @@ class DrawingCanvasState extends State<DrawingCanvas> {
 
       _CanvasPainter(
         strokes: _strokes,
+        textBoxes: _textBoxes,
         bgImage: _bgImage,
         shapeStart: null,
         shapeCurrent: null,
@@ -504,7 +597,7 @@ class DrawingCanvasState extends State<DrawingCanvas> {
   }
 
   void _deleteSelection() {
-    if (_selectedPointIndices.isEmpty) return;
+    if (_selectedPointIndices.isEmpty && _selectedTextIds.isEmpty) return;
     _saveHistory();
 
     final remaining = <DrawnPoint>[];
@@ -523,7 +616,9 @@ class DrawingCanvasState extends State<DrawingCanvas> {
 
     setState(() {
       _strokes = remaining;
+      _textBoxes.removeWhere((text) => _selectedTextIds.contains(text.id));
       _selectedPointIndices.clear();
+      _selectedTextIds.clear();
       _selectionPath = <Offset>[];
       _selectionBounds = null;
       _selectionStart = null;
@@ -534,8 +629,8 @@ class DrawingCanvasState extends State<DrawingCanvas> {
     _notify();
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text(
-            'Selected handwriting deleted. You can use Undo to restore it.'),
+        content:
+            Text('Selected content deleted. You can use Undo to restore it.'),
         behavior: SnackBarBehavior.floating,
       ),
     );
@@ -548,7 +643,7 @@ class DrawingCanvasState extends State<DrawingCanvas> {
       builder: (dialogContext) => AlertDialog(
         title: const Text('Selected area'),
         content: const Text(
-          'Copy this area as an image, or delete the selected handwriting?',
+          'Copy this area as an image, or delete the selected content?',
         ),
         actions: [
           TextButton(
@@ -556,7 +651,7 @@ class DrawingCanvasState extends State<DrawingCanvas> {
             child: const Text('Cancel'),
           ),
           TextButton.icon(
-            onPressed: _selectedPointIndices.isEmpty
+            onPressed: _selectedPointIndices.isEmpty && _selectedTextIds.isEmpty
                 ? null
                 : () => Navigator.pop(dialogContext, 'delete'),
             icon: const Icon(Icons.delete_outline),
@@ -573,6 +668,153 @@ class DrawingCanvasState extends State<DrawingCanvas> {
     );
     if (action == 'copy') await _copySelection();
     if (action == 'delete') _deleteSelection();
+  }
+
+  int? _textIndexAt(Offset position) {
+    for (var index = _textBoxes.length - 1; index >= 0; index--) {
+      if (_textBounds(_textBoxes[index]).inflate(8).contains(position)) {
+        return index;
+      }
+    }
+    return null;
+  }
+
+  Rect _textBounds(NoteTextBox text) {
+    final painter = _textPainter(text);
+    return text.position & painter.size;
+  }
+
+  void _handleTextTap(Offset position) {
+    if (_editingTextId != null) _finishInlineText();
+
+    var index = _textIndexAt(position);
+    if (index == null) {
+      final renderObject = _repaintKey.currentContext?.findRenderObject();
+      final canvasWidth =
+          renderObject is RenderBox ? renderObject.size.width : 600.0;
+      final left =
+          position.dx.clamp(4.0, max(4.0, canvasWidth - 90.0)).toDouble();
+      final width = min(260.0, max(80.0, canvasWidth - left - 8.0));
+      _saveHistory();
+      setState(() {
+        _textBoxes.add(NoteTextBox(
+          id: 'text-${DateTime.now().microsecondsSinceEpoch}',
+          text: '',
+          position: Offset(left, max(0.0, position.dy)),
+          color: _effectiveColor,
+          width: width,
+        ));
+        index = _textBoxes.length - 1;
+      });
+    } else {
+      _saveHistory();
+    }
+
+    _beginInlineText(index!);
+  }
+
+  void _beginInlineText(int index) {
+    final text = _textBoxes[index];
+    _closeTextEditor(removeEmpty: true);
+    _textController = TextEditingController(text: text.text);
+    _textFocusNode = FocusNode()..addListener(_handleTextFocusChanged);
+    setState(() => _editingTextId = text.id);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _editingTextId != text.id) return;
+      _textFocusNode?.requestFocus();
+      _textController?.selection = TextSelection.collapsed(
+        offset: _textController!.text.length,
+      );
+    });
+  }
+
+  void _handleTextFocusChanged() {
+    if (_textFocusNode?.hasFocus != false) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _textFocusNode?.hasFocus == false) _finishInlineText();
+    });
+  }
+
+  void _finishInlineText() {
+    final id = _editingTextId;
+    if (id == null) return;
+    final value = _textController?.text.trimRight() ?? '';
+    final index = _textBoxes.indexWhere((text) => text.id == id);
+    if (index >= 0) {
+      if (value.trim().isEmpty) {
+        _textBoxes.removeAt(index);
+      } else {
+        _textBoxes[index].text = value;
+      }
+    }
+    _closeTextEditor();
+    if (mounted) setState(() {});
+    _notify();
+  }
+
+  void finishTextEditing() => _finishInlineText();
+
+  void _closeTextEditor({bool removeEmpty = false}) {
+    final id = _editingTextId;
+    if (removeEmpty && id != null) {
+      _textBoxes
+          .removeWhere((text) => text.id == id && text.text.trim().isEmpty);
+    }
+    _textFocusNode?.removeListener(_handleTextFocusChanged);
+    _textFocusNode?.dispose();
+    _textController?.dispose();
+    _textFocusNode = null;
+    _textController = null;
+    _editingTextId = null;
+  }
+
+  void _updateInlineText(String value) {
+    final id = _editingTextId;
+    if (id == null) return;
+    final index = _textBoxes.indexWhere((text) => text.id == id);
+    if (index < 0) return;
+    setState(() => _textBoxes[index].text = value);
+    _notify();
+  }
+
+  Widget _buildInlineTextEditor(NoteTextBox text) {
+    return Positioned(
+      left: text.position.dx,
+      top: text.position.dy,
+      width: text.width,
+      child: Material(
+        color: Colors.transparent,
+        child: TextField(
+          controller: _textController,
+          focusNode: _textFocusNode,
+          autofocus: true,
+          maxLines: null,
+          minLines: 1,
+          maxLength: 1000,
+          buildCounter: (_,
+                  {required currentLength, required isFocused, maxLength}) =>
+              null,
+          style: TextStyle(
+            color: text.color,
+            fontSize: text.fontSize,
+            height: 1.25,
+          ),
+          cursorColor: const Color(0xFF6C63FF),
+          decoration: const InputDecoration(
+            isDense: true,
+            hintText: 'Type here…',
+            contentPadding: EdgeInsets.symmetric(horizontal: 3, vertical: 2),
+            enabledBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: Color(0xFF6C63FF)),
+            ),
+            focusedBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: Color(0xFF6C63FF), width: 2),
+            ),
+          ),
+          onChanged: _updateInlineText,
+        ),
+      ),
+    );
   }
 
   void _addFreePoint(Offset pos) {
@@ -786,7 +1028,15 @@ class DrawingCanvasState extends State<DrawingCanvas> {
       return const Center(child: CircularProgressIndicator());
     }
 
+    final editingIndex = _editingTextId == null
+        ? -1
+        : _textBoxes.indexWhere((text) => text.id == _editingTextId);
+    final editingText = editingIndex < 0 ? null : _textBoxes[editingIndex];
+
     return GestureDetector(
+      onTapUp: widget.tool == DrawingTool.text
+          ? (details) => _handleTextTap(details.localPosition)
+          : null,
       onPanStart: (d) => _onPanStart(d.localPosition),
       onPanUpdate: (d) => _onPanUpdate(d.localPosition),
       onPanEnd: (_) => _onPanEnd(),
@@ -799,24 +1049,33 @@ class DrawingCanvasState extends State<DrawingCanvas> {
           : null,
       child: RepaintBoundary(
         key: _repaintKey,
-        child: CustomPaint(
-          painter: _CanvasPainter(
-            strokes: _strokes,
-            bgImage: _bgImage,
-            shapeStart: _shapeStart,
-            shapeCurrent: _shapeCurrent,
-            tool: widget.tool,
-            previewColor: _effectiveColor,
-            previewWidth: widget.strokeWidth,
-            paperStyle: widget.page.paperStyle,
-            eraserPosition: _eraserPosition,
-            eraserRadius: _eraserRadius,
-            selectionPath: _selectionPath,
-            selectionBounds: _visibleSelectionBounds,
-            selectionTool: _isSelectionTool ? widget.tool : null,
-          ),
-          size: Size.infinite,
-          child: Container(color: Colors.transparent),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            CustomPaint(
+              painter: _CanvasPainter(
+                strokes: _strokes,
+                textBoxes: _textBoxes
+                    .where((text) => text.id != _editingTextId)
+                    .toList(),
+                bgImage: _bgImage,
+                shapeStart: _shapeStart,
+                shapeCurrent: _shapeCurrent,
+                tool: widget.tool,
+                previewColor: _effectiveColor,
+                previewWidth: widget.strokeWidth,
+                paperStyle: widget.page.paperStyle,
+                eraserPosition: _eraserPosition,
+                eraserRadius: _eraserRadius,
+                selectionPath: _selectionPath,
+                selectionBounds: _visibleSelectionBounds,
+                selectionTool: _isSelectionTool ? widget.tool : null,
+              ),
+              size: Size.infinite,
+              child: Container(color: Colors.transparent),
+            ),
+            if (editingText != null) _buildInlineTextEditor(editingText),
+          ],
         ),
       ),
     );
@@ -825,6 +1084,7 @@ class DrawingCanvasState extends State<DrawingCanvas> {
 
 class _CanvasPainter extends CustomPainter {
   final List<DrawnPoint> strokes;
+  final List<NoteTextBox> textBoxes;
   final ui.Image? bgImage;
   final Offset? shapeStart;
   final Offset? shapeCurrent;
@@ -840,6 +1100,7 @@ class _CanvasPainter extends CustomPainter {
 
   _CanvasPainter({
     required this.strokes,
+    required this.textBoxes,
     required this.bgImage,
     required this.shapeStart,
     required this.shapeCurrent,
@@ -883,6 +1144,10 @@ class _CanvasPainter extends CustomPainter {
       paint.color = curr.color;
       paint.strokeWidth = curr.strokeWidth;
       canvas.drawLine(curr.point!, next.point!, paint);
+    }
+
+    for (final text in textBoxes) {
+      _textPainter(text).paint(canvas, text.position);
     }
 
     // Shape preview
@@ -1013,4 +1278,27 @@ class _CanvasPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _CanvasPainter old) => true;
+}
+
+TextPainter _textPainter(NoteTextBox text) {
+  final painter = TextPainter(
+    text: TextSpan(
+      text: text.text,
+      style: TextStyle(
+        color: text.color,
+        fontSize: text.fontSize,
+        height: 1.25,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  );
+  painter.layout(maxWidth: text.width);
+  return painter;
+}
+
+class _CanvasSnapshot {
+  final List<DrawnPoint> strokes;
+  final List<NoteTextBox> textBoxes;
+
+  const _CanvasSnapshot({required this.strokes, required this.textBoxes});
 }

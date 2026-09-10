@@ -47,10 +47,61 @@ class DrawnPoint {
       );
 }
 
+class NoteTextBox {
+  final String id;
+  String text;
+  Offset position;
+  Color color;
+  double fontSize;
+  double width;
+
+  NoteTextBox({
+    required this.id,
+    required this.text,
+    required this.position,
+    required this.color,
+    this.fontSize = 18,
+    this.width = 260,
+  });
+
+  NoteTextBox copy() => NoteTextBox(
+        id: id,
+        text: text,
+        position: position,
+        color: color,
+        fontSize: fontSize,
+        width: width,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'text': text,
+        'x': position.dx,
+        'y': position.dy,
+        'color': color.toARGB32(),
+        'fontSize': fontSize,
+        'width': width,
+      };
+
+  factory NoteTextBox.fromJson(Map<String, dynamic> j) => NoteTextBox(
+        id: j['id']?.toString() ??
+            'text-${DateTime.now().microsecondsSinceEpoch}',
+        text: j['text']?.toString() ?? '',
+        position: Offset(
+          (j['x'] as num? ?? 0).toDouble(),
+          (j['y'] as num? ?? 0).toDouble(),
+        ),
+        color: Color((j['color'] as num? ?? 0xFF1A1A1A).toInt()),
+        fontSize: (j['fontSize'] as num? ?? 18).toDouble(),
+        width: (j['width'] as num? ?? 260).toDouble(),
+      );
+}
+
 // ── Single page ───────────────────────────────────────────────────────────
 class NotePage {
   final String id;
   List<DrawnPoint> strokes;
+  List<NoteTextBox> textBoxes;
   PaperStyle paperStyle;
   String? backgroundImageBase64;
   String? sourceFileName;
@@ -58,16 +109,19 @@ class NotePage {
   NotePage({
     required this.id,
     List<DrawnPoint>? strokes,
+    List<NoteTextBox>? textBoxes,
     this.paperStyle = PaperStyle.lined,
     this.backgroundImageBase64,
     this.sourceFileName,
-  }) : strokes = strokes ?? [];
+  })  : strokes = strokes ?? [],
+        textBoxes = textBoxes ?? [];
 
   bool get hasPdfBackground => backgroundImageBase64 != null;
 
   Map<String, dynamic> toJson() => {
         'id': id,
         'strokes': strokes.map((s) => s.toJson()).toList(),
+        'texts': textBoxes.map((text) => text.toJson()).toList(),
         'style': paperStyle.toJson,
         'bg': backgroundImageBase64,
         'src': sourceFileName,
@@ -75,8 +129,11 @@ class NotePage {
 
   factory NotePage.fromJson(Map<String, dynamic> j) => NotePage(
         id: j['id'] as String,
-        strokes: (j['strokes'] as List)
+        strokes: (j['strokes'] as List? ?? const [])
             .map((s) => DrawnPoint.fromJson(s as Map<String, dynamic>))
+            .toList(),
+        textBoxes: (j['texts'] as List? ?? const [])
+            .map((text) => NoteTextBox.fromJson(text as Map<String, dynamic>))
             .toList(),
         paperStyle: PaperStyleExt.fromJson(j['style'] as String? ?? 'lined'),
         backgroundImageBase64: j['bg'] as String?,

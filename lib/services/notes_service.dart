@@ -65,6 +65,50 @@ class NotesService {
     }
   }
 
+  /// Saves one edited note locally first, then uploads only that note.
+  /// Returns false when the local save succeeded but cloud sync must retry.
+  Future<bool> saveNote(Note note) async {
+    final notes = await _loadLocalNotes();
+    final index = notes.indexWhere((item) => item.id == note.id);
+    if (index >= 0) {
+      notes[index] = note;
+    } else {
+      notes.insert(0, note);
+    }
+    await _saveLocalNotes(notes);
+
+    final user = _cloudUser;
+    if (user == null) return true;
+    try {
+      final path = '${user.id}/${note.id}.json';
+      final bytes = Uint8List.fromList(utf8.encode(note.toJsonString()));
+      await _client.storage
+          .from(_noteDataBucket)
+          .uploadBinary(
+            path,
+            bytes,
+            fileOptions: const FileOptions(
+              contentType: 'application/json',
+              upsert: true,
+            ),
+          )
+          .timeout(const Duration(seconds: 15));
+      await _client.from('notebook_notes').upsert({
+        'id': note.id,
+        'user_id': user.id,
+        'title': note.title,
+        'folder_id': note.folderId,
+        'data_path': path,
+        'updated_at': note.updatedAt.toUtc().toIso8601String(),
+        'deleted_at': null,
+      }).timeout(const Duration(seconds: 15));
+      return true;
+    } catch (error) {
+      debugPrint('Note saved locally but could not sync to Supabase: $error');
+      return false;
+    }
+  }
+
   Future<List<NoteFolder>> loadFolders() async {
     final localFolders = await _loadLocalFolders();
     final user = _cloudUser;

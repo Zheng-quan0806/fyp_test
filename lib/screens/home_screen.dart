@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 import '../models/note.dart';
 import '../services/notes_service.dart';
+import '../services/community_unread_service.dart';
 import '../services/study_streak_service.dart';
 import '../widgets/study_activity_region.dart';
 import 'calendar_screen.dart';
@@ -24,6 +25,7 @@ class _HomeScreenState extends State<HomeScreen> {
   List<Note> _notes = [];
   List<NoteFolder> _folders = [];
   bool _loading = true;
+  bool _openingRoute = false;
   int _selectedTab = 0; // 0=Note, 1=Calendar, 2=Chat, 3=GPT, 4=Game
   String? _draggingOverFolderId;
 
@@ -36,6 +38,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _load() async {
     final notes = await _service.loadNotes();
     final folders = await _service.loadFolders();
+    if (!mounted) return;
     setState(() {
       _notes = notes;
       _folders = folders;
@@ -332,24 +335,38 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _openNote(Note note) async {
-    await Navigator.push(
-        context, MaterialPageRoute(builder: (_) => CanvasScreen(note: note)));
-    await _load();
+    if (_openingRoute || !mounted) return;
+    _openingRoute = true;
+    try {
+      await Navigator.push(
+          context, MaterialPageRoute(builder: (_) => CanvasScreen(note: note)));
+      if (!mounted) return;
+      await _load();
+    } finally {
+      _openingRoute = false;
+    }
   }
 
   Future<void> _openFolder(NoteFolder folder) async {
-    await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => FolderScreen(
-          folder: folder,
-          allNotes: _notes,
-          allFolders: _folders,
-          onNotesChanged: _load,
+    if (_openingRoute || !mounted) return;
+    _openingRoute = true;
+    try {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => FolderScreen(
+            folder: folder,
+            allNotes: _notes,
+            allFolders: _folders,
+            onNotesChanged: _load,
+          ),
         ),
-      ),
-    );
-    await _load();
+      );
+      if (!mounted) return;
+      await _load();
+    } finally {
+      _openingRoute = false;
+    }
   }
 
   Future<void> _deleteNote(Note note) async {
@@ -526,9 +543,46 @@ class _HomeScreenState extends State<HomeScreen> {
           borderRadius: BorderRadius.circular(14),
         ),
         child: Column(children: [
-          Icon(sel ? activeIcon : icon,
+          if (index == 2)
+            ValueListenableBuilder<int>(
+              valueListenable: CommunityUnreadService.instance.unreadCount,
+              builder: (context, unreadCount, _) => SizedBox(
+                width: 32,
+                height: 28,
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  alignment: Alignment.center,
+                  children: [
+                    Icon(
+                      sel ? activeIcon : icon,
+                      size: 26,
+                      color:
+                          sel ? const Color(0xFF6C63FF) : Colors.grey.shade500,
+                    ),
+                    if (unreadCount > 0)
+                      Positioned(
+                        right: 0,
+                        top: 0,
+                        child: Container(
+                          width: 10,
+                          height: 10,
+                          decoration: BoxDecoration(
+                            color: Colors.redAccent,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 1.5),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            )
+          else
+            Icon(
+              sel ? activeIcon : icon,
               size: 26,
-              color: sel ? const Color(0xFF6C63FF) : Colors.grey.shade500),
+              color: sel ? const Color(0xFF6C63FF) : Colors.grey.shade500,
+            ),
           const SizedBox(height: 4),
           Text(label,
               style: TextStyle(
@@ -549,7 +603,7 @@ class _HomeScreenState extends State<HomeScreen> {
           child: _buildNotesPanel(),
         ),
         const CalendarScreen(),
-        const ClassicChatScreen(),
+        ClassicChatScreen(isVisible: _selectedTab == 2),
         StudyActivityRegion(
           enabled: _selectedTab == 3,
           child: const ChatScreen(),
@@ -568,7 +622,7 @@ class _HomeScreenState extends State<HomeScreen> {
       animation: streak,
       builder: (context, _) => Tooltip(
         message: streak.isProbation
-            ? 'Probation: ${streak.recoveryDays}/${StudyStreakService.recoveryGoalDays} recovery days'
+            ? 'Streak Recovery: ${streak.visibleRecoveryDays}/${StudyStreakService.recoveryGoalDays} days completed'
             : '${streak.currentStreak} day study streak',
         child: InkWell(
           borderRadius: BorderRadius.circular(14),
@@ -592,7 +646,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               Text(
                 streak.isProbation
-                    ? '${streak.recoveryDays}/${StudyStreakService.recoveryGoalDays}'
+                    ? '${streak.visibleRecoveryDays}/${StudyStreakService.recoveryGoalDays}'
                     : '${streak.currentStreak}',
                 style:
                     const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
@@ -641,7 +695,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   Text(
                     'Complete ${StudyStreakService.dailyGoalMinutes} minutes on '
                     '${StudyStreakService.recoveryGoalDays} consecutive days to '
-                    'reburn your streak. Missing 2 consecutive days resets it.',
+                    'restore your streak. Missing 2 consecutive days resets it.',
                     textAlign: TextAlign.center,
                   ),
                 ],

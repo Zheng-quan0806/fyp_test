@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -16,6 +17,10 @@ class StudyStreakService extends ChangeNotifier with WidgetsBindingObserver {
   static const int recoveryGoalDays = 2;
   static const int missedDaysBeforeReset = 2;
   static const Duration idleLimit = Duration(minutes: 3);
+
+  // UI-only preview for development screenshots. This never changes or saves
+  // the real local/Supabase streak state and is disabled in release builds.
+  static const bool previewRepairUi = kDebugMode;
 
   final Set<Object> _activeRegions = <Object>{};
   Timer? _timer;
@@ -39,10 +44,11 @@ class StudyStreakService extends ChangeNotifier with WidgetsBindingObserver {
       (dailyGoalSeconds - todaySeconds).clamp(0, dailyGoalSeconds).toInt();
   double get progress => (todaySeconds / dailyGoalSeconds).clamp(0.0, 1.0);
   bool get goalComplete => todaySeconds >= dailyGoalSeconds;
-  bool get isProbation => _effectiveProbation;
+  bool get isProbation => previewRepairUi || _effectiveProbation;
+  int get visibleRecoveryDays => previewRepairUi ? 1 : recoveryDays;
 
   String get statusLabel => isProbation
-      ? 'Probation $recoveryDays/$recoveryGoalDays'
+      ? 'Streak Recovery $visibleRecoveryDays/$recoveryGoalDays'
       : '$currentStreak day streak';
 
   Future<void> initialize() async {

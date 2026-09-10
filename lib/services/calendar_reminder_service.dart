@@ -15,11 +15,26 @@ class CalendarReminderService {
   static const int reminderDaysBefore = 1;
   static const String _channelId = 'calendar_reminders';
   static const String _channelName = 'Calendar reminders';
+  static const String _communityChannelId = 'community_messages';
+  static const String _communityChannelName = 'Community messages';
   static const NotificationDetails _notificationDetails = NotificationDetails(
     android: AndroidNotificationDetails(
       _channelId,
       _channelName,
       channelDescription: 'Reminders for upcoming calendar tasks',
+      importance: Importance.high,
+      priority: Priority.high,
+    ),
+    iOS: DarwinNotificationDetails(),
+    macOS: DarwinNotificationDetails(),
+    windows: WindowsNotificationDetails(),
+  );
+  static const NotificationDetails _communityNotificationDetails =
+      NotificationDetails(
+    android: AndroidNotificationDetails(
+      _communityChannelId,
+      _communityChannelName,
+      channelDescription: 'Notifications for new community chat messages',
       importance: Importance.high,
       priority: Priority.high,
     ),
@@ -84,13 +99,49 @@ class CalendarReminderService {
     await cancelTask(task.id);
     if (task.isCompleted) return false;
 
-    final reminder = reminderDateFor(task.date);
     final now = DateTime.now();
-    if (!reminder.isAfter(now)) {
-      final today = DateTime(now.year, now.month, now.day);
-      final eventDay = DateTime(task.date.year, task.date.month, task.date.day);
-      if (!notifyImmediatelyIfLate || !eventDay.isAfter(today)) return false;
-      if (!await _ensurePermissions()) return false;
+    final dayReminder = reminderDateFor(task.date);
+    final today = DateTime(now.year, now.month, now.day);
+    final eventDay = DateTime(task.date.year, task.date.month, task.date.day);
+    final showLateDayReminder = notifyImmediatelyIfLate &&
+        !dayReminder.isAfter(now) &&
+        eventDay.isAfter(today);
+    final taskStart = taskStartDateFor(task);
+    final tenMinuteReminder = tenMinuteReminderDateFor(task);
+    final showLateTenMinuteReminder = notifyImmediatelyIfLate &&
+        tenMinuteReminder != null &&
+        !tenMinuteReminder.isAfter(now) &&
+        taskStart!.isAfter(now);
+    final hasFutureDayReminder = dayReminder.isAfter(now);
+    final hasFutureTenMinuteReminder = tenMinuteReminder?.isAfter(now) == true;
+
+    if (!hasFutureDayReminder &&
+        !showLateDayReminder &&
+        !hasFutureTenMinuteReminder &&
+        !showLateTenMinuteReminder) {
+      return false;
+    }
+    if (!await _ensurePermissions()) return false;
+
+    var reminderCreated = false;
+    if (hasFutureDayReminder) {
+      try {
+        await _notifications.zonedSchedule(
+          id: _notificationId(task.id),
+          title: 'Tomorrow: ${task.title}',
+          body: task.details.isEmpty
+              ? 'You have a calendar task tomorrow.'
+              : task.details,
+          scheduledDate: tz.TZDateTime.from(dayReminder, tz.local),
+          notificationDetails: _notificationDetails,
+          androidScheduleMode: _androidScheduleMode,
+          payload: 'calendar:${task.id}',
+        );
+        reminderCreated = true;
+      } catch (error) {
+        debugPrint('Could not schedule calendar reminder: $error');
+      }
+    } else if (showLateDayReminder) {
       try {
         await _notifications.show(
           id: _notificationId(task.id),
@@ -101,44 +152,84 @@ class CalendarReminderService {
           notificationDetails: _notificationDetails,
           payload: 'calendar:${task.id}',
         );
-        return true;
+        reminderCreated = true;
       } catch (error) {
         debugPrint('Could not show late calendar reminder: $error');
-        return false;
       }
     }
-    if (!await _ensurePermissions()) return false;
 
-    try {
-      final scheduledDate = tz.TZDateTime.from(reminder, tz.local);
-      await _notifications.zonedSchedule(
-        id: _notificationId(task.id),
-        title: 'Tomorrow: ${task.title}',
-        body: task.details.isEmpty
-            ? 'You have a calendar task tomorrow.'
-            : task.details,
-        scheduledDate: scheduledDate,
-        notificationDetails: _notificationDetails,
-        androidScheduleMode: _androidScheduleMode,
-        payload: 'calendar:${task.id}',
-      );
-      return true;
-    } catch (error) {
-      debugPrint('Could not schedule calendar reminder: $error');
-      return false;
+    if (hasFutureTenMinuteReminder) {
+      try {
+        await _notifications.zonedSchedule(
+          id: _tenMinuteNotificationId(task.id),
+          title: 'Starting soon: ${task.title}',
+          body: task.details.isEmpty
+              ? 'This task starts in 10 minutes.'
+              : task.details,
+          scheduledDate: tz.TZDateTime.from(tenMinuteReminder!, tz.local),
+          notificationDetails: _notificationDetails,
+          androidScheduleMode: _androidScheduleMode,
+          payload: 'calendar:${task.id}',
+        );
+        reminderCreated = true;
+      } catch (error) {
+        debugPrint('Could not schedule 10-minute task reminder: $error');
+      }
+    } else if (showLateTenMinuteReminder) {
+      try {
+        await _notifications.show(
+          id: _tenMinuteNotificationId(task.id),
+          title: 'Starting soon: ${task.title}',
+          body: task.details.isEmpty
+              ? 'This task starts in less than 10 minutes.'
+              : task.details,
+          notificationDetails: _notificationDetails,
+          payload: 'calendar:${task.id}',
+        );
+        reminderCreated = true;
+      } catch (error) {
+        debugPrint('Could not show late 10-minute task reminder: $error');
+      }
     }
+
+    return reminderCreated;
   }
 
   Future<void> rescheduleAll(Iterable<CalendarTask> tasks) async {
     await initialize();
     if (!_initialized || kIsWeb) return;
     for (final task in tasks) {
-      if (task.isCompleted ||
-          !reminderDateFor(task.date).isAfter(DateTime.now())) {
+      if (task.isCompleted) {
         await cancelTask(task.id);
       } else {
         await scheduleTask(task, notifyImmediatelyIfLate: false);
       }
+    }
+  }
+
+  Future<void> showCommunityMessage({
+    required int messageId,
+    required String body,
+  }) async {
+    await initialize();
+    if (!_initialized || kIsWeb || !await _ensurePermissions()) return;
+
+    final normalizedBody = body.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final preview = normalizedBody.isEmpty
+        ? 'A file was shared with you.'
+        : normalizedBody.length > 140
+            ? '${normalizedBody.substring(0, 137)}...'
+            : normalizedBody;
+    try {
+      await _notifications.show(
+        id: 1000000000 + (messageId % 1000000000),
+        title: 'New community message',
+        body: preview,
+        notificationDetails: _communityNotificationDetails,
+        payload: 'community:$messageId',
+      );
+    } catch (error) {
+      debugPrint('Could not show community message notification: $error');
     }
   }
 
@@ -147,6 +238,7 @@ class CalendarReminderService {
     if (!_initialized || kIsWeb) return;
     try {
       await _notifications.cancel(id: _notificationId(taskId));
+      await _notifications.cancel(id: _tenMinuteNotificationId(taskId));
     } catch (error) {
       debugPrint('Could not cancel calendar reminder: $error');
     }
@@ -165,6 +257,21 @@ class CalendarReminderService {
       reminderHour,
     );
   }
+
+  DateTime? taskStartDateFor(CalendarTask task) {
+    final minutes = task.minutesSinceMidnight;
+    if (minutes == null) return null;
+    return DateTime(
+      task.date.year,
+      task.date.month,
+      task.date.day,
+      minutes ~/ 60,
+      minutes % 60,
+    );
+  }
+
+  DateTime? tenMinuteReminderDateFor(CalendarTask task) =>
+      taskStartDateFor(task)?.subtract(const Duration(minutes: 10));
 
   Future<bool> _ensurePermissions() async {
     if (_permissionsChecked) return true;
@@ -208,4 +315,7 @@ class CalendarReminderService {
     }
     return hash;
   }
+
+  int _tenMinuteNotificationId(String taskId) =>
+      _notificationId('$taskId:ten-minute');
 }
